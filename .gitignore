@@ -1,0 +1,19 @@
+# Binaries
+/finager
+
+# Swagger docs (generated — run: swag init -g cmd/api/main.go --output docs)
+docs/
+
+# Environment files (never commit secrets)
+.env
+
+# Go test cache
+*.test
+
+# IDE configs
+.vscode/
+.idea/
+
+# OS artifacts
+.DS_Store
+Thumbs.db

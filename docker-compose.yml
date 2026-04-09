@@ -1,0 +1,47 @@
+services:
+  # ─── API ────────────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: finager_api
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:8080"
+    env_file:
+      - .env
+    environment:
+      # Override the default localhost URI so the API reaches the mongo service.
+      MONGO_URI: mongodb://mongo:27017
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - finager_net
+
+  # ─── MongoDB ─────────────────────────────────────────────────────────────────
+  mongo:
+    image: mongo:7.0
+    container_name: finager_mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"   # Exposed so you can connect with Compass/mongosh locally
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - finager_net
+
+# ─── Volumes ──────────────────────────────────────────────────────────────────
+volumes:
+  mongo_data:
+
+# ─── Networks ─────────────────────────────────────────────────────────────────
+networks:
+  finager_net:
+    driver: bridge
