@@ -12,13 +12,12 @@ import (
 
 // Config holds all application configuration values loaded from the environment.
 type Config struct {
-	MongoURI        string
-	MongoDB         string
-	Port            string
-	APILogin        string
-	APIPassword     string
-	JWTSecret       string
-	JWTExpiresHours int
+	MongoURI               string
+	MongoDB                string
+	Port                   string
+	JWTSecret              string
+	JWTExpiresHours        int
+	JWTRefreshExpiresHours int
 }
 
 // Load reads the .env file (if present) and returns a populated Config.
@@ -31,13 +30,12 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		MongoURI:        getEnv("MONGO_URI", "mongodb://localhost:27017"),
-		MongoDB:         getEnv("MONGO_DB", "finager"),
-		Port:            getEnv("PORT", "8080"),
-		APILogin:        getEnv("API_LOGIN", "admin"),
-		APIPassword:     getEnv("API_PASSWORD", ""),
-		JWTSecret:       getEnv("JWT_SECRET", ""),
-		JWTExpiresHours: getEnvInt("JWT_EXPIRATION_HOURS", 24),
+		MongoURI:               getEnv("MONGO_URI", "mongodb://localhost:27017"),
+		MongoDB:                getEnv("MONGO_DB", "finager"),
+		Port:                   getEnv("PORT", "8080"),
+		JWTSecret:              getEnv("JWT_SECRET", ""),
+		JWTExpiresHours:        getEnvInt("JWT_EXPIRATION_HOURS", 1),
+		JWTRefreshExpiresHours: getEnvInt("JWT_REFRESH_EXPIRATION_HOURS", 168), // 7 days
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -53,9 +51,6 @@ func (c *Config) validate() error {
 
 	if c.JWTSecret == "" {
 		missing = append(missing, "JWT_SECRET")
-	}
-	if c.APIPassword == "" {
-		missing = append(missing, "API_PASSWORD")
 	}
 
 	if len(missing) > 0 {

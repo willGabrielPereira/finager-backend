@@ -29,8 +29,9 @@ type UpsertResult struct {
 	Skipped  int
 }
 
-// BulkUpsert insere transações novas e ignora as que já existem, usando
-// o par (fitid, account_id) como chave de unicidade.
+// BulkUpsert insere transações novas e ignora as que já existem.
+// A chave de unicidade é (fitid, account_id, family_id): a mesma transação
+// bancária pode existir em famílias diferentes sem conflito.
 // Retorna um resumo de quantas foram inseridas e quantas já existiam.
 func (r *TransactionRepository) BulkUpsert(ctx context.Context, txs []models.Transaction) (UpsertResult, error) {
 	if len(txs) == 0 {
@@ -46,6 +47,7 @@ func (r *TransactionRepository) BulkUpsert(ctx context.Context, txs []models.Tra
 		filter := bson.D{
 			{Key: "fitid", Value: tx.FITID},
 			{Key: "account_id", Value: tx.AccountID},
+			{Key: "family_id", Value: tx.FamilyID},
 		}
 
 		update := bson.D{
@@ -70,14 +72,16 @@ func (r *TransactionRepository) BulkUpsert(ctx context.Context, txs []models.Tra
 
 // ListFilter agrupa todos os filtros aceitos pela operação List.
 type ListFilter struct {
-	Tag       string
-	Type      string // DEBIT | CREDIT
-	DateFrom  time.Time
-	DateTo    time.Time
-	AmountMin *float64
-	AmountMax *float64
-	Page      int
-	Limit     int
+	FamilyID          bson.ObjectID   // obrigatório — todas as queries são escopadas por família
+	AllowedAccountIDs []bson.ObjectID // obrigatório — as contas bancárias em que a family/user possuem acesso
+	Tag               string
+	Type              string // DEBIT | CREDIT
+	DateFrom          time.Time
+	DateTo            time.Time
+	AmountMin         *float64
+	AmountMax         *float64
+	Page              int
+	Limit             int
 }
 
 // PagedResult é o envelope de resposta paginada para transações.
@@ -95,7 +99,14 @@ func (r *TransactionRepository) List(ctx context.Context, f ListFilter) (PagedRe
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	filter := bson.D{}
+	// family_id + account_id sempre formam a primeira barreira intransferível
+	// Isso garante o isolamento entre famílias ("family_id") e assegura que
+	// num cenário de contabilidade granular ("account_id in"), o usuário 
+	// sequer consiga ver extratos de subcontas que ele não compartilha.
+	filter := bson.D{
+		{Key: "family_id", Value: f.FamilyID},
+		{Key: "account_id", Value: bson.M{"$in": f.AllowedAccountIDs}},
+	}
 
 	if f.Tag != "" {
 		filter = append(filter, bson.E{Key: "tags", Value: f.Tag})
@@ -159,4 +170,3 @@ func (r *TransactionRepository) List(ctx context.Context, f ListFilter) (PagedRe
 		TotalPages: totalPages,
 	}, nil
 }
-

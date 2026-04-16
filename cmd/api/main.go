@@ -1,14 +1,14 @@
-//	@title			Finager API
-//	@version		1.0
-//	@description	API REST para gestão financeira: importação de extratos OFX e tagueamento de transações.
-//	@host			localhost:8080
-//	@BasePath		/
-//	@schemes		http https
+// @title			Finager API
+// @version		1.0
+// @description	API REST para gestão financeira: importação de extratos OFX e tagueamento de transações.
+// @host			localhost:8080
+// @BasePath		/
+// @schemes		http https
 //
-//	@securityDefinitions.apikey	BearerAuth
-//	@in							header
-//	@name						Authorization
-//	@description				Informe o token no formato: Bearer {token}
+// @securityDefinitions.apikey	BearerAuth
+// @in							header
+// @name						Authorization
+// @description				Informe o token no formato: Bearer {token}
 package main
 
 import (
@@ -45,34 +45,80 @@ func main() {
 	}
 	defer db.Close()
 
-	// ── Repositories \u2500───────────────────────────────────────────────────────
-	txRepo := repository.NewTransactionRepository(db.DB)
+	// ── Repositories ─────────────────────────────────────────────────────────
+	repos := repository.New(db.DB)
 
-	// ── Handlers ─────────────────────────────────────────────────────────────
-	txHandler := handlers.NewTransactionHandler(txRepo)
+	// ── Indexes (idempotent — safe to run on every startup) ──────────────────
+	startupCtx, cancelStartup := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancelStartup()
+
+	if err := repos.EnsureIndexes(startupCtx); err != nil {
+		log.Fatalf("Failed to create database indexes: %v", err)
+	}
 
 	// ── Auth ─────────────────────────────────────────────────────────────────
 	authSvc := auth.NewService(cfg.JWTSecret, cfg.JWTExpiresHours)
-	authHandler := auth.NewHandler(authSvc, cfg.APILogin, cfg.APIPassword)
-	authMiddleware := middleware.Authenticate(authSvc)
+	authHandler := auth.NewHandler(authSvc, repos.Users, repos.Families, repos.RefreshTokens, repos.Blocklist, cfg.JWTRefreshExpiresHours)
+
+	// ── Middleware ────────────────────────────────────────────────────────────
+	authMiddleware := middleware.Authenticate(authSvc, repos.Blocklist)
+
+	// Rate limiters for auth endpoints (interface-based — swap for Redis anytime).
+	loginLimiter := middleware.NewInMemoryRateLimiter(10, time.Minute)   // 10 req/min per IP
+	refreshLimiter := middleware.NewInMemoryRateLimiter(20, time.Minute) // 20 req/min per IP
+
+	// ── Handlers ─────────────────────────────────────────────────────────────
+	txHandler := handlers.NewTransactionHandler(repos.Transactions, repos.Accounts)
+	tagHandler := handlers.NewTagHandler(repos.Tags)
+	accHandler := handlers.NewAccountHandler(repos.Accounts)
 
 	// ── Router ───────────────────────────────────────────────────────────────
 	mux := http.NewServeMux()
 
 	// Public routes (no auth required)
 	mux.HandleFunc("GET /health", handlers.HealthHandler)
-	mux.HandleFunc("POST /auth/login", authHandler.Login)
 	mux.HandleFunc("GET /swagger/", httpSwagger.WrapHandler)
 
-	// Protected routes — wrap handlers with authMiddleware.
-	mux.Handle("GET /me", authMiddleware(http.HandlerFunc(handlers.MeHandler)))
-	mux.Handle("POST /transactions/import", authMiddleware(http.HandlerFunc(txHandler.Import)))
-	mux.Handle("GET /transactions", authMiddleware(http.HandlerFunc(txHandler.List)))
+	// Auth routes — rate-limited but public
+	mux.Handle("POST /auth/login",
+		middleware.RateLimit(loginLimiter)(http.HandlerFunc(authHandler.Login)))
+	mux.Handle("POST /auth/register", http.HandlerFunc(authHandler.Register))
+	mux.Handle("POST /auth/refresh",
+		middleware.RateLimit(refreshLimiter)(http.HandlerFunc(authHandler.Refresh)))
+
+	// Auth routes — authenticated
+	mux.Handle("POST /auth/logout",
+		authMiddleware(http.HandlerFunc(authHandler.Logout)))
+	mux.Handle("PUT /auth/password",
+		authMiddleware(http.HandlerFunc(authHandler.ChangePassword)))
+
+	// Protected routes
+	mux.Handle("GET /me",
+		authMiddleware(http.HandlerFunc(handlers.MeHandler)))
+	mux.Handle("POST /transactions/import",
+		authMiddleware(http.HandlerFunc(txHandler.Import)))
+	mux.Handle("GET /transactions",
+		authMiddleware(http.HandlerFunc(txHandler.List)))
+
+	// ── Tags ─────────────────────────────────────────────────────────────────
+	mux.Handle("GET /tags", authMiddleware(http.HandlerFunc(tagHandler.List)))
+	mux.Handle("POST /tags", authMiddleware(http.HandlerFunc(tagHandler.Create)))
+	mux.Handle("PUT /tags/{id}", authMiddleware(http.HandlerFunc(tagHandler.Update)))
+	mux.Handle("DELETE /tags/{id}", authMiddleware(http.HandlerFunc(tagHandler.Delete)))
+
+	// ── Accounts ─────────────────────────────────────────────────────────────
+	mux.Handle("GET /accounts", authMiddleware(http.HandlerFunc(accHandler.List)))
+	mux.Handle("POST /accounts", authMiddleware(http.HandlerFunc(accHandler.Create)))
+	mux.Handle("PUT /accounts/{id}", authMiddleware(http.HandlerFunc(accHandler.Update)))
+	mux.Handle("DELETE /accounts/{id}", authMiddleware(http.HandlerFunc(accHandler.Delete)))
+
+	// ── Security headers (applied globally) ──────────────────────────────────
+	rootHandler := middleware.SecurityHeaders(mux)
 
 	// ── HTTP Server ───────────────────────────────────────────────────────────
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
-		Handler:      mux,
+		Handler:      rootHandler,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,

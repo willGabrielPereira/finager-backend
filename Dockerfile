@@ -24,9 +24,13 @@ COPY . .
 # Generate Swagger documentation.
 RUN swag init -g cmd/api/main.go --output docs
 
-# Compile. CGO_ENABLED=0 produces a fully static binary compatible with scratch/alpine.
+# Compile API
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -ldflags="-s -w" -o /finager ./cmd/api
+
+# Compile Seed
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" -o /finager-seed ./cmd/seed
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Stage 2 — Runtime
@@ -40,9 +44,11 @@ RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
 
-# Copy only the compiled binary from the builder stage.
+# Copy both binaries from builder
 COPY --from=builder /finager .
+COPY --from=builder /finager-seed .
 
 EXPOSE 8080
 
-ENTRYPOINT ["./finager"]
+# Execute the idempotent seed script first, then launch the API
+ENTRYPOINT ["/bin/sh", "-c", "./finager-seed && ./finager"]

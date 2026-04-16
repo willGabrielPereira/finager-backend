@@ -26,8 +26,6 @@ func Parse(r io.Reader) ([]models.Transaction, error) {
 			continue
 		}
 
-		accountID := string(stmt.BankAcctFrom.AcctID)
-
 		for _, rawTx := range stmt.BankTranList.Transactions {
 			amount, err := strconv.ParseFloat(rawTx.TrnAmt.String(), 64)
 			if err != nil {
@@ -42,7 +40,6 @@ func Parse(r io.Reader) ([]models.Transaction, error) {
 				Name:       string(rawTx.Name),
 				Memo:       string(rawTx.Memo),
 				Tags:       []string{},
-				AccountID:  accountID,
 				ImportedAt: time.Now().UTC(),
 			}
 
