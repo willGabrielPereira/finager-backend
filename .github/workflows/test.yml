@@ -25,6 +25,11 @@ jobs:
       - name: Go Mod Download
         run: go mod download
 
+      - name: Generate Swagger Docs
+        run: |
+          go install github.com/swaggo/swag/cmd/swag@latest
+          swag init -g cmd/api/main.go --parseDependency
+
       - name: Run Tests
         # O Github Actions já possui o Docker pré-instalado e rodando.
         # Os testes baseados em testcontainers-go funcionarão nativamente!

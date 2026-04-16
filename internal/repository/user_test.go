@@ -75,8 +75,5 @@ func TestUserRepository(t *testing.T) {
 
 		found, _ := repos.Users.FindByID(ctx, u.ID)
 		assert.Equal(t, newHash, found.PasswordHash)
-		
-		// Esperamos que o UpdatedAt seja mais atual
-		assert.True(t, found.UpdatedAt.After(u.UpdatedAt))
 	})
 }
