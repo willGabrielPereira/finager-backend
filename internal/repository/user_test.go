@@ -3,6 +3,7 @@ package repository_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -68,13 +69,14 @@ func TestUserRepository(t *testing.T) {
 		_ = repos.Users.Create(ctx, u)
 
 		newHash := "new-fake-hash"
+		time.Sleep(2 * time.Millisecond) // Garante precisão pra não competir com truncamento de ms do BSON
 		err := repos.Users.UpdatePassword(ctx, u.ID, newHash)
 		require.NoError(t, err)
 
 		found, _ := repos.Users.FindByID(ctx, u.ID)
 		assert.Equal(t, newHash, found.PasswordHash)
 		
-		// Esperamos que o UpdatedAt seja mais atual (já que o Create gera com time.Now e Update também)
-		assert.True(t, found.UpdatedAt.After(u.UpdatedAt) || found.UpdatedAt.Equal(u.UpdatedAt))
+		// Esperamos que o UpdatedAt seja mais atual
+		assert.True(t, found.UpdatedAt.After(u.UpdatedAt))
 	})
 }
