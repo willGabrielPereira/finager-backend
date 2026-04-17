@@ -1,4 +1,4 @@
-.PHONY: docs build
+.PHONY: docs build seed migrate migrate-status
 
 ## docs: Regenera a documentação Swagger a partir das anotações nos handlers
 docs:
@@ -11,6 +11,18 @@ build: docs
 ## run: Roda a API localmente (requer MongoDB na porta 27017)
 run: docs
 	go run ./cmd/api
+
+## seed: Cria os usuários e família iniciais no MongoDB (idempotente)
+seed:
+	go run ./cmd/seed
+
+## migrate: Aplica todas as migrations de banco de dados pendentes
+migrate:
+	go run ./cmd/migrate up
+
+## migrate-status: Exibe o status de cada migration (APPLIED / PENDING)
+migrate-status:
+	go run ./cmd/migrate status
 
 ## up: Sobe o ambiente completo via Docker Compose
 up:

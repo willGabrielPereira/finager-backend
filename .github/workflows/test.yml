@@ -1,0 +1,36 @@
+name: CI / Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: Go Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Go Mod Download
+        run: go mod download
+
+      - name: Generate Swagger Docs
+        run: |
+          go install github.com/swaggo/swag/cmd/swag@latest
+          swag init -g cmd/api/main.go --parseDependency
+
+      - name: Run Tests
+        # O Github Actions já possui o Docker pré-instalado e rodando.
+        # Os testes baseados em testcontainers-go funcionarão nativamente!
+        run: go test -v ./...

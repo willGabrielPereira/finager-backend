@@ -37,6 +37,27 @@ services:
     networks:
       - finager_net
 
+  # ─── Mongo Express (UI Web) ───────────────────────────────────────────────────
+  mongo-express:
+    image: mongo-express:latest
+    container_name: finager_mongo_express
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      # Conecta ao serviço 'mongo' definido acima
+      ME_CONFIG_MONGODB_SERVER: mongo
+      ME_CONFIG_MONGODB_PORT: 27017
+      ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
+      # Credenciais de acesso à interface web
+      ME_CONFIG_BASICAUTH_USERNAME: "admin"
+      ME_CONFIG_BASICAUTH_PASSWORD: "password"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - finager_net
+
 # ─── Volumes ──────────────────────────────────────────────────────────────────
 volumes:
   mongo_data:

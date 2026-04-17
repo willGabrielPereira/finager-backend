@@ -1,25 +1,32 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
+	"github.com/willGabrielPereira/finager-backend/internal/middleware"
+	"github.com/willGabrielPereira/finager-backend/internal/models"
 	"github.com/willGabrielPereira/finager-backend/internal/ofxparser"
 	"github.com/willGabrielPereira/finager-backend/internal/repository"
+	"github.com/willGabrielPereira/finager-backend/internal/response"
+	"github.com/willGabrielPereira/finager-backend/internal/tagger"
 )
 
 const maxUploadSize = 10 << 20 // 10 MB
 
 // TransactionHandler agrupa os handlers relacionados a transações.
 type TransactionHandler struct {
-	repo *repository.TransactionRepository
+	txRepo   *repository.TransactionRepository
+	accRepo  *repository.AccountRepository
+	ruleRepo *repository.TagRuleRepository
 }
 
-// NewTransactionHandler cria um TransactionHandler com o repositório injetado.
-func NewTransactionHandler(repo *repository.TransactionRepository) *TransactionHandler {
-	return &TransactionHandler{repo: repo}
+// NewTransactionHandler cria um TransactionHandler com repositórios e lógicas injetadas.
+func NewTransactionHandler(txRepo *repository.TransactionRepository, accRepo *repository.AccountRepository, ruleRepo *repository.TagRuleRepository) *TransactionHandler {
+	return &TransactionHandler{txRepo: txRepo, accRepo: accRepo, ruleRepo: ruleRepo}
 }
 
 type importResponse struct {
@@ -29,9 +36,11 @@ type importResponse struct {
 }
 
 // Import processa o upload de um arquivo OFX e persiste as transações no MongoDB.
+// Cada transação é vinculada à família do usuário autenticado (family_id) e ao
+// usuário que realizou o import (created_by).
 //
 // @Summary      Importar OFX
-// @Description  Recebe um arquivo OFX via multipart/form-data e salva as transações. Duplicatas (mesmo FITID + account) são ignoradas.
+// @Description  Recebe um arquivo OFX via multipart/form-data e salva as transações. Duplicatas (mesmo FITID + account + family) são ignoradas.
 // @Tags         transactions
 // @Accept       multipart/form-data
 // @Produce      json
@@ -46,39 +55,120 @@ type importResponse struct {
 func (h *TransactionHandler) Import(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
+	claims := middleware.GetClaims(r)
+	if claims == nil {
+		response.Error(w, http.StatusUnauthorized, "E_UNAUTHORIZED", "Token ausente ou malformado")
+		return
+	}
+
+	familyID, err := bson.ObjectIDFromHex(claims.FamilyID)
+	if err != nil {
+		response.Error(w, http.StatusUnauthorized, "E_INVALID_SESSION", "A família vinculada a este login é inválida")
+		return
+	}
+
+	userID, err := bson.ObjectIDFromHex(claims.UserID)
+	if err != nil {
+		response.Error(w, http.StatusUnauthorized, "E_INVALID_SESSION", "O token atrelado a este usuário é inválido")
+		return
+	}
+
 	// Limita o tamanho do body para evitar uploads gigantes.
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
 
 	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "arquivo muito grande ou formato inválido"})
+		response.Validations(w, response.ValidationError{
+			Field: "file", Rule: "max_size", Message: "Arquivo extrapola o tamanho máximo permitido ou formato rejeitado",
+		})
+		return
+	}
+
+	// ==== OBRIGATORIEDADE DE CONTA BANCÁRIA VINCULADA ====
+	accountIDHex := r.FormValue("account_id")
+	if accountIDHex == "" {
+		response.Validations(w, response.ValidationError{
+			Field: "account_id", Rule: "required", Message: "O campo é obrigatório para importação",
+		})
+		return
+	}
+	
+	accountID, err := bson.ObjectIDFromHex(accountIDHex)
+	if err != nil {
+		response.Validations(w, response.ValidationError{
+			Field: "account_id", Rule: "objectid", Message: "Identificador de formulário enviado num formato corrompido",
+		})
+		return
+	}
+	
+	// Certificar autorização do usuário à conta antes do Upload
+	visibleAccs, err := h.accRepo.FindVisibleAccounts(r.Context(), familyID, userID)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha DB ao processar contas visíveis")
+		return
+	}
+	
+	allowedToImport := false
+	for _, acc := range visibleAccs {
+		if acc.ID == accountID {
+			allowedToImport = true
+			break
+		}
+	}
+	
+	if !allowedToImport {
+		response.Error(w, http.StatusForbidden, "E_FORBIDDEN", "Você não tem permissão para acessar a conta solicitada")
 		return
 	}
 
 	file, _, err := r.FormFile("file")
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "campo 'file' não encontrado no formulário"})
+		response.Validations(w, response.ValidationError{
+			Field: "file", Rule: "required", Message: "Arquivo inalcançável ou descartado pela requisição",
+		})
 		return
 	}
 	defer file.Close()
 
 	transactions, err := ofxparser.Parse(file)
 	if err != nil {
-		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "falha ao processar o arquivo OFX: " + err.Error()})
+		response.Validations(w, response.ValidationError{
+			Field: "file", Rule: "invalid_format", Message: "O arquivo OFX está corrompido ou fora do formato estrito: " + err.Error(),
+		})
 		return
 	}
 
-	result, err := h.repo.BulkUpsert(r.Context(), transactions)
+	// Carrega regras de tagging visíveis para esta família (sistema + customizadas).
+	rules, err := h.ruleRepo.FindAllVisible(r.Context(), familyID)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "falha ao salvar as transações"})
+		// Não bloqueia a importação por falha no tagger — apenas loga e segue sem tags.
+		rules = nil
+	}
+
+	// Converte para o tipo concreto esperado pelo tagger.
+	var ruleValues []models.TagRule
+	for _, rp := range rules {
+		ruleValues = append(ruleValues, *rp)
+	}
+
+	// Stamp every transaction with the authenticated user's family and identity, e a CONTA BANCÁRIA
+	for i := range transactions {
+		transactions[i].FamilyID = familyID
+		transactions[i].CreatedBy = userID
+		transactions[i].AccountID = accountID // O ID do mongo verdadeiro ao invés do metadado sujo do banco
+
+		// Auto-tagging inteligente: aplica as regras da família sobre nome/memo.
+		if suggested := tagger.Apply(ruleValues, transactions[i].Name, transactions[i].Memo); len(suggested) > 0 {
+			transactions[i].Tags = suggested
+		}
+	}
+
+	result, err := h.txRepo.BulkUpsert(r.Context(), transactions)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Erro interno ao salvar transações no DB")
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(importResponse{
+	response.JSON(w, http.StatusOK, importResponse{
 		Inserted: result.Inserted,
 		Skipped:  result.Skipped,
 		Message:  "importação concluída",
@@ -86,9 +176,10 @@ func (h *TransactionHandler) Import(w http.ResponseWriter, r *http.Request) {
 }
 
 // List retorna transações paginadas com filtros opcionais via query string.
+// Sempre filtra pelo family_id do usuário autenticado.
 //
 // @Summary      Listar transações
-// @Description  Retorna uma página de transações com filtros opcionais. Ordenado por data decrescente.
+// @Description  Retorna uma página de transações da família do usuário autenticado, com filtros opcionais. Ordenado por data decrescente.
 // @Tags         transactions
 // @Produce      json
 // @Security     BearerAuth
@@ -107,6 +198,24 @@ func (h *TransactionHandler) Import(w http.ResponseWriter, r *http.Request) {
 func (h *TransactionHandler) List(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
+	claims := middleware.GetClaims(r)
+	if claims == nil {
+		response.Error(w, http.StatusUnauthorized, "E_UNAUTHORIZED", "Token ausente ou inválido")
+		return
+	}
+
+	familyID, err := bson.ObjectIDFromHex(claims.FamilyID)
+	if err != nil {
+		response.Error(w, http.StatusUnauthorized, "E_INVALID_SESSION", "invalid family in token")
+		return
+	}
+
+	userID, err := bson.ObjectIDFromHex(claims.UserID)
+	if err != nil {
+		response.Error(w, http.StatusUnauthorized, "E_INVALID_SESSION", "invalid user in token")
+		return
+	}
+
 	q := r.URL.Query()
 
 	page := queryInt(q.Get("page"), 1)
@@ -122,11 +231,43 @@ func (h *TransactionHandler) List(w http.ResponseWriter, r *http.Request) {
 		limit = 100
 	}
 
+	// Identifica quais contas bancárias o usuário tem acesso antes de prosseguir
+	visibleAccs, err := h.accRepo.FindVisibleAccounts(r.Context(), familyID, userID)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "falha ao checar contas visíveis")
+		return
+	}
+	
+	// Extrai apenas os IDs validos
+	var allowedAccountIDs []bson.ObjectID
+	for _, acc := range visibleAccs {
+		allowedAccountIDs = append(allowedAccountIDs, acc.ID)
+	}
+
+	// Se não veio NENHUMA conta visível, ele não pode ver NENHUMA transação (proteção hard).
+	if len(allowedAccountIDs) == 0 {
+		response.JSON(w, http.StatusOK, repository.PagedResult{
+			Data:       []models.Transaction{},
+			Total:      0,
+			Page:       page,
+			Limit:      limit,
+			TotalPages: 0,
+		})
+		return
+	}
+
 	filter := repository.ListFilter{
-		Page:  page,
-		Limit: limit,
-		Tag:   q.Get("tag"),
-		Type:  q.Get("type"),
+		FamilyID:          familyID,
+		AllowedAccountIDs: allowedAccountIDs,
+		Page:              page,
+		Limit:             limit,
+		Type:              q.Get("type"),
+	}
+
+	if v := q.Get("tag"); v != "" {
+		if tagID, err := bson.ObjectIDFromHex(v); err == nil {
+			filter.TagID = &tagID
+		}
 	}
 
 	if v := q.Get("date_from"); v != "" {
@@ -152,14 +293,13 @@ func (h *TransactionHandler) List(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	result, err := h.repo.List(r.Context(), filter)
+	result, err := h.txRepo.List(r.Context(), filter)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "falha ao buscar transações"})
+		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "falha ao buscar transações")
 		return
 	}
 
-	_ = json.NewEncoder(w).Encode(result)
+	response.JSON(w, http.StatusOK, result)
 }
 
 // queryInt converte uma string para int, retornando fallback em caso de falha.
