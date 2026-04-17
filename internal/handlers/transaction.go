@@ -12,19 +12,21 @@ import (
 	"github.com/willGabrielPereira/finager-backend/internal/ofxparser"
 	"github.com/willGabrielPereira/finager-backend/internal/repository"
 	"github.com/willGabrielPereira/finager-backend/internal/response"
+	"github.com/willGabrielPereira/finager-backend/internal/tagger"
 )
 
 const maxUploadSize = 10 << 20 // 10 MB
 
 // TransactionHandler agrupa os handlers relacionados a transações.
 type TransactionHandler struct {
-	txRepo  *repository.TransactionRepository
-	accRepo *repository.AccountRepository
+	txRepo   *repository.TransactionRepository
+	accRepo  *repository.AccountRepository
+	ruleRepo *repository.TagRuleRepository
 }
 
 // NewTransactionHandler cria um TransactionHandler com repositórios e lógicas injetadas.
-func NewTransactionHandler(txRepo *repository.TransactionRepository, accRepo *repository.AccountRepository) *TransactionHandler {
-	return &TransactionHandler{txRepo: txRepo, accRepo: accRepo}
+func NewTransactionHandler(txRepo *repository.TransactionRepository, accRepo *repository.AccountRepository, ruleRepo *repository.TagRuleRepository) *TransactionHandler {
+	return &TransactionHandler{txRepo: txRepo, accRepo: accRepo, ruleRepo: ruleRepo}
 }
 
 type importResponse struct {
@@ -135,11 +137,29 @@ func (h *TransactionHandler) Import(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Carrega regras de tagging visíveis para esta família (sistema + customizadas).
+	rules, err := h.ruleRepo.FindAllVisible(r.Context(), familyID)
+	if err != nil {
+		// Não bloqueia a importação por falha no tagger — apenas loga e segue sem tags.
+		rules = nil
+	}
+
+	// Converte para o tipo concreto esperado pelo tagger.
+	var ruleValues []models.TagRule
+	for _, rp := range rules {
+		ruleValues = append(ruleValues, *rp)
+	}
+
 	// Stamp every transaction with the authenticated user's family and identity, e a CONTA BANCÁRIA
 	for i := range transactions {
 		transactions[i].FamilyID = familyID
 		transactions[i].CreatedBy = userID
 		transactions[i].AccountID = accountID // O ID do mongo verdadeiro ao invés do metadado sujo do banco
+
+		// Auto-tagging inteligente: aplica as regras da família sobre nome/memo.
+		if suggested := tagger.Apply(ruleValues, transactions[i].Name, transactions[i].Memo); len(suggested) > 0 {
+			transactions[i].Tags = suggested
+		}
 	}
 
 	result, err := h.txRepo.BulkUpsert(r.Context(), transactions)
@@ -238,11 +258,16 @@ func (h *TransactionHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	filter := repository.ListFilter{
 		FamilyID:          familyID,
-		AllowedAccountIDs: allowedAccountIDs, // Injetando o funil de restrição
+		AllowedAccountIDs: allowedAccountIDs,
 		Page:              page,
 		Limit:             limit,
-		Tag:               q.Get("tag"),
 		Type:              q.Get("type"),
+	}
+
+	if v := q.Get("tag"); v != "" {
+		if tagID, err := bson.ObjectIDFromHex(v); err == nil {
+			filter.TagID = &tagID
+		}
 	}
 
 	if v := q.Get("date_from"); v != "" {

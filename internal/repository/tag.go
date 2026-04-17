@@ -106,3 +106,20 @@ func (r *TagRepository) UpsertSystemTag(ctx context.Context, tag *models.Tag) er
 	_, err := r.coll.UpdateOne(ctx, filter, update, opts)
 	return err
 }
+
+// FindSystemTags retorna todas as tags globais de sistema.
+// Usado pelo seed para resolver nome → ObjectID antes de criar as TagRules.
+func (r *TagRepository) FindSystemTags(ctx context.Context) ([]*models.Tag, error) {
+	cursor, err := r.coll.Find(ctx, bson.M{"is_system": true})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var tags []*models.Tag
+	if err := cursor.All(ctx, &tags); err != nil {
+		return nil, err
+	}
+	return tags, nil
+}
+

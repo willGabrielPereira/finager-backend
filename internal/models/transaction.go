@@ -19,7 +19,7 @@ type Transaction struct {
 	Amount     float64       `bson:"amount"         json:"amount"`
 	Name       string        `bson:"name"           json:"name"`        // Merchant / payee name
 	Memo       string        `bson:"memo"           json:"memo"`
-	Tags       []string      `bson:"tags"           json:"tags"`        // User-defined tags, e.g. ["food", "subscription"]
+	Tags       []bson.ObjectID `bson:"tags"           json:"tags"`        // IDs das tags vinculadas à transação
 	AccountID  bson.ObjectID `bson:"account_id"     json:"account_id"` // Source Account reference
 	ImportedAt time.Time     `bson:"imported_at"    json:"imported_at"`
 	FamilyID   bson.ObjectID `bson:"family_id"      json:"family_id"`  // Access scope: all family members can see this

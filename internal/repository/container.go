@@ -16,6 +16,7 @@ type Container struct {
 	RefreshTokens *RefreshTokenRepository
 	Blocklist     *BlocklistRepository
 	Tags          *TagRepository
+	TagRules      *TagRuleRepository
 	Accounts      *AccountRepository
 }
 
@@ -28,6 +29,7 @@ func New(db *mongo.Database) *Container {
 		RefreshTokens: NewRefreshTokenRepository(db),
 		Blocklist:     NewBlocklistRepository(db),
 		Tags:          NewTagRepository(db),
+		TagRules:      NewTagRuleRepository(db),
 		Accounts:      NewAccountRepository(db),
 	}
 }
@@ -42,6 +44,9 @@ func (c *Container) EnsureIndexes(ctx context.Context) error {
 		return err
 	}
 	if err := c.Blocklist.EnsureIndexes(ctx); err != nil {
+		return err
+	}
+	if err := c.TagRules.EnsureIndexes(ctx); err != nil {
 		return err
 	}
 	return nil

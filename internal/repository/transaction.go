@@ -74,8 +74,8 @@ func (r *TransactionRepository) BulkUpsert(ctx context.Context, txs []models.Tra
 type ListFilter struct {
 	FamilyID          bson.ObjectID   // obrigatório — todas as queries são escopadas por família
 	AllowedAccountIDs []bson.ObjectID // obrigatório — as contas bancárias em que a family/user possuem acesso
-	Tag               string
-	Type              string // DEBIT | CREDIT
+	TagID             *bson.ObjectID  // filtrar por ID de tag
+	Type              string          // DEBIT | CREDIT
 	DateFrom          time.Time
 	DateTo            time.Time
 	AmountMin         *float64
@@ -108,8 +108,8 @@ func (r *TransactionRepository) List(ctx context.Context, f ListFilter) (PagedRe
 		{Key: "account_id", Value: bson.M{"$in": f.AllowedAccountIDs}},
 	}
 
-	if f.Tag != "" {
-		filter = append(filter, bson.E{Key: "tags", Value: f.Tag})
+	if f.TagID != nil {
+		filter = append(filter, bson.E{Key: "tags", Value: *f.TagID})
 	}
 
 	if f.Type != "" {

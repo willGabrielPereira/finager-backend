@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -18,6 +19,7 @@ type Config struct {
 	JWTSecret              string
 	JWTExpiresHours        int
 	JWTRefreshExpiresHours int
+	CORSAllowedOrigins     []string
 }
 
 // Load reads the .env file (if present) and returns a populated Config.
@@ -36,6 +38,7 @@ func Load() (*Config, error) {
 		JWTSecret:              getEnv("JWT_SECRET", ""),
 		JWTExpiresHours:        getEnvInt("JWT_EXPIRATION_HOURS", 1),
 		JWTRefreshExpiresHours: getEnvInt("JWT_REFRESH_EXPIRATION_HOURS", 168), // 7 days
+		CORSAllowedOrigins:     getEnvSlice("CORS_ALLOWED_ORIGINS", []string{"*"}), // Defaults to *
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -80,6 +83,18 @@ func getEnvInt(key string, fallback int) int {
 		if i, err := strconv.Atoi(value); err == nil {
 			return i
 		}
+	}
+	return fallback
+}
+
+func getEnvSlice(key string, fallback []string) []string {
+	if value, ok := os.LookupEnv(key); ok && value != "" {
+		// Expects a comma-separated string like: "http://localhost:3000,https://meuapp.com"
+		var list []string
+		for _, v := range strings.Split(value, ",") {
+			list = append(list, strings.TrimSpace(v))
+		}
+		return list
 	}
 	return fallback
 }

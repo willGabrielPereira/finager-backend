@@ -32,6 +32,10 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -ldflags="-s -w" -o /finager-seed ./cmd/seed
 
+# Compile Migrate
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" -o /finager-migrate ./cmd/migrate
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Stage 2 — Runtime
 # Minimal alpine image: includes CA certs and tzdata
@@ -44,11 +48,15 @@ RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
 
-# Copy both binaries from builder
+# Copy all three binaries from builder
 COPY --from=builder /finager .
 COPY --from=builder /finager-seed .
+COPY --from=builder /finager-migrate .
 
 EXPOSE 8080
 
-# Execute the idempotent seed script first, then launch the API
-ENTRYPOINT ["/bin/sh", "-c", "./finager-seed && ./finager"]
+# Ordem de inicialização:
+#   1. migrations — altera o schema do banco para a versão atual
+#   2. seed       — garante dados iniciais (idempotente)
+#   3. api        — sobe o servidor HTTP
+ENTRYPOINT ["/bin/sh", "-c", "./finager-migrate up && ./finager-seed && ./finager"]
