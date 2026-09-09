@@ -1,4 +1,4 @@
-.PHONY: docs build seed migrate migrate-status
+.PHONY: docs build seed migrate migrate-status up reset-transactions
 
 ## docs: Regenera a documentação Swagger a partir das anotações nos handlers
 docs:
@@ -27,3 +27,7 @@ migrate-status:
 ## up: Sobe o ambiente completo via Docker Compose
 up:
 	docker compose up --build
+
+## reset-transactions: Apaga TODAS as transações e o estado do classificador de IA (preserva usuários, família, contas e tags)
+reset-transactions:
+	go run ./cmd/reset

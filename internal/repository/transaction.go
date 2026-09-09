@@ -170,3 +170,106 @@ func (r *TransactionRepository) List(ctx context.Context, f ListFilter) (PagedRe
 		TotalPages: totalPages,
 	}, nil
 }
+
+// FindByID busca uma transação específica por ID.
+func (r *TransactionRepository) FindByID(ctx context.Context, id bson.ObjectID) (*models.Transaction, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	var tx models.Transaction
+	err := r.col.FindOne(ctx, bson.M{"_id": id}).Decode(&tx)
+	if err != nil {
+		return nil, err
+	}
+	return &tx, nil
+}
+
+// UpdateTags altera a lista de tags vinculadas a uma transação.
+func (r *TransactionRepository) UpdateTags(ctx context.Context, id bson.ObjectID, tagIDs []bson.ObjectID) error {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	if tagIDs == nil {
+		tagIDs = []bson.ObjectID{}
+	}
+
+	_, err := r.col.UpdateByID(ctx, id, bson.M{"$set": bson.M{"tags": tagIDs}})
+	return err
+}
+
+// FindAllTagged retorna todas as transações da família que já possuem pelo menos uma tag.
+// Se familyID for bson.NilObjectID, busca transações categorizadas em todo o sistema (treino global).
+func (r *TransactionRepository) FindAllTagged(ctx context.Context, familyID bson.ObjectID) ([]models.Transaction, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	filter := bson.M{
+		"tags": bson.M{
+			"$exists": true,
+			"$not":    bson.M{"$size": 0},
+		},
+	}
+	if familyID != bson.NilObjectID {
+		filter["family_id"] = familyID
+	}
+
+	cursor, err := r.col.Find(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var txs []models.Transaction
+	if err := cursor.All(ctx, &txs); err != nil {
+		return nil, err
+	}
+	return txs, nil
+}
+
+// FindAllUntagged retorna todas as transações da família que não possuem tags.
+func (r *TransactionRepository) FindAllUntagged(ctx context.Context, familyID bson.ObjectID) ([]models.Transaction, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	filter := bson.M{
+		"family_id": familyID,
+		"$or": []bson.M{
+			{"tags": bson.M{"$exists": false}},
+			{"tags": bson.M{"$size": 0}},
+			{"tags": nil},
+		},
+	}
+
+	cursor, err := r.col.Find(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var txs []models.Transaction
+	if err := cursor.All(ctx, &txs); err != nil {
+		return nil, err
+	}
+	return txs, nil
+}
+
+// FindByIDAndFamily busca uma transação por ID garantindo que ela pertence à família especificada.
+func (r *TransactionRepository) FindByIDAndFamily(ctx context.Context, id, familyID bson.ObjectID) (*models.Transaction, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	var tx models.Transaction
+	filter := bson.M{
+		"_id":       id,
+		"family_id": familyID,
+	}
+	err := r.col.FindOne(ctx, filter).Decode(&tx)
+	if err != nil {
+		return nil, err
+	}
+	return &tx, nil
+}
+
+
+
+

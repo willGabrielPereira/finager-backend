@@ -41,7 +41,7 @@ func TestTransactionIntegrationAndSecurity(t *testing.T) {
 	// Middleware de autenticação real (vai validar os tokens e bloquear blocklist)
 	authMid := middleware.Authenticate(authSvc, repos.Blocklist)
 	
-	txHandler := handlers.NewTransactionHandler(repos.Transactions, repos.Accounts, repos.TagRules)
+	txHandler := handlers.NewTransactionHandler(repos.Transactions, repos.Accounts, repos.Tags, repos.ClassifierStates)
 	
 	mux.Handle("POST /transactions/import", authMid(http.HandlerFunc(txHandler.Import)))
 	mux.Handle("GET /transactions", authMid(http.HandlerFunc(txHandler.List)))

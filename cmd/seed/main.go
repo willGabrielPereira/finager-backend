@@ -76,9 +76,6 @@ func main() {
 	nameToID := ensureSystemTags(ctx, repos.Tags)
 	log.Printf("✓ System Tags : %d tags ensured", len(nameToID))
 
-	// ── Regras de auto-tagging ────────────────────────────────────────────────
-	ensureSystemTagRules(ctx, repos.TagRules, nameToID)
-	log.Printf("✓ Tag Rules   : %d rules ensured", len(systemTagRuleDefs))
 
 	// ── Contas bancárias ──────────────────────────────────────────────────────
 	sharedAcc := ensureAccount(ctx, repos.Accounts, "Conta Conjunta", "Nubank", family.ID, user1.ID, nil)

@@ -23,8 +23,11 @@ func ensureSystemTags(ctx context.Context, repo *repository.TagRepository) map[s
 		{Name: "Salário", Color: "#00897B", Icon: "attach_money", IsSystem: true},
 		{Name: "Streamings", Color: "#FF0000", Icon: "subscriptions", IsSystem: true},
 		{Name: "Compras", Color: "#FB8C00", Icon: "shopping_cart", IsSystem: true},
-		{Name: "Cinema", Color: "#6D4C41", Icon: "movie", IsSystem: true},
 		{Name: "Entretenimento", Color: "#AB47BC", Icon: "sports_esports", IsSystem: true},
+		{Name: "Mercado", Color: "#47bc91ff", Icon: "shopping_basket", IsSystem: true},
+		{Name: "Pet", Color: "#e88c0cff", Icon: "pets", IsSystem: true},
+		{Name: "Vestuário", Color: "#00558bff", Icon: "checkroom", IsSystem: true},
+		{Name: "Contas", Color: "#f7445eff", Icon: "receipt", IsSystem: true},
 	}
 
 	for _, tag := range defs {

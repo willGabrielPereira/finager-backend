@@ -1,32 +1,47 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 
+	"github.com/willGabrielPereira/finager-backend/internal/classifier"
 	"github.com/willGabrielPereira/finager-backend/internal/middleware"
 	"github.com/willGabrielPereira/finager-backend/internal/models"
 	"github.com/willGabrielPereira/finager-backend/internal/ofxparser"
 	"github.com/willGabrielPereira/finager-backend/internal/repository"
 	"github.com/willGabrielPereira/finager-backend/internal/response"
-	"github.com/willGabrielPereira/finager-backend/internal/tagger"
 )
 
 const maxUploadSize = 10 << 20 // 10 MB
 
 // TransactionHandler agrupa os handlers relacionados a transações.
 type TransactionHandler struct {
-	txRepo   *repository.TransactionRepository
-	accRepo  *repository.AccountRepository
-	ruleRepo *repository.TagRuleRepository
+	txRepo    *repository.TransactionRepository
+	accRepo   *repository.AccountRepository
+	tagRepo   *repository.TagRepository
+	stateRepo *repository.ClassifierStateRepository
 }
 
 // NewTransactionHandler cria um TransactionHandler com repositórios e lógicas injetadas.
-func NewTransactionHandler(txRepo *repository.TransactionRepository, accRepo *repository.AccountRepository, ruleRepo *repository.TagRuleRepository) *TransactionHandler {
-	return &TransactionHandler{txRepo: txRepo, accRepo: accRepo, ruleRepo: ruleRepo}
+func NewTransactionHandler(
+	txRepo *repository.TransactionRepository,
+	accRepo *repository.AccountRepository,
+	tagRepo *repository.TagRepository,
+	stateRepo *repository.ClassifierStateRepository,
+) *TransactionHandler {
+	return &TransactionHandler{
+		txRepo:    txRepo,
+		accRepo:   accRepo,
+		tagRepo:   tagRepo,
+		stateRepo: stateRepo,
+	}
 }
 
 type importResponse struct {
@@ -137,17 +152,10 @@ func (h *TransactionHandler) Import(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Carrega regras de tagging visíveis para esta família (sistema + customizadas).
-	rules, err := h.ruleRepo.FindAllVisible(r.Context(), familyID)
+	// Inicializa o classificador local persistido de forma otimizada O(1)
+	c, err := classifier.GetOrBuildForFamily(r.Context(), familyID, h.tagRepo, h.txRepo, h.stateRepo)
 	if err != nil {
-		// Não bloqueia a importação por falha no tagger — apenas loga e segue sem tags.
-		rules = nil
-	}
-
-	// Converte para o tipo concreto esperado pelo tagger.
-	var ruleValues []models.TagRule
-	for _, rp := range rules {
-		ruleValues = append(ruleValues, *rp)
+		c = nil
 	}
 
 	// Stamp every transaction with the authenticated user's family and identity, e a CONTA BANCÁRIA
@@ -156,9 +164,11 @@ func (h *TransactionHandler) Import(w http.ResponseWriter, r *http.Request) {
 		transactions[i].CreatedBy = userID
 		transactions[i].AccountID = accountID // O ID do mongo verdadeiro ao invés do metadado sujo do banco
 
-		// Auto-tagging inteligente: aplica as regras da família sobre nome/memo.
-		if suggested := tagger.Apply(ruleValues, transactions[i].Name, transactions[i].Memo); len(suggested) > 0 {
-			transactions[i].Tags = suggested
+		// Auto-tagging inteligente com IA Local (Naive Bayes)
+		if c != nil {
+			if suggested := c.Classify(transactions[i].Name + " " + transactions[i].Memo); len(suggested) > 0 {
+				transactions[i].Tags = suggested
+			}
 		}
 	}
 
@@ -321,3 +331,92 @@ func parseDate(s string) (time.Time, error) {
 	}
 	return time.Parse("2006-01-02", s)
 }
+
+// updateTransactionRequest DTO para alteração de tags
+type updateTransactionRequest struct {
+	Tags []string `json:"tags"`
+}
+
+// Update altera as tags de uma transação garantindo segurança multi-tenant
+func (h *TransactionHandler) Update(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	tx, _, ok := ResolveTransactionForFamily(w, r, h.txRepo)
+	if !ok {
+		return
+	}
+
+	var req updateTransactionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Validations(w, response.ValidationError{Field: "payload", Rule: "malformed", Message: "Payload inválido"})
+		return
+	}
+
+	// Conversão de IDs de tag para bson.ObjectID
+	var tagIDs []bson.ObjectID
+	for _, tagHex := range req.Tags {
+		tagID, err := bson.ObjectIDFromHex(tagHex)
+		if err != nil {
+			response.Error(w, http.StatusBadRequest, "E_VALIDATION", "ID de tag inválido: "+tagHex)
+			return
+		}
+		tagIDs = append(tagIDs, tagID)
+	}
+
+	// Atualizar tags da transação no banco
+	if err := h.txRepo.UpdateTags(r.Context(), tx.ID, tagIDs); err != nil {
+		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha ao salvar as tags da transação")
+		return
+	}
+
+	// Reconstrói o estado do classificador em background de forma assíncrona
+	go func(fID bson.ObjectID) {
+		_, _ = classifier.RebuildStateForFamily(context.Background(), fID, h.tagRepo, h.txRepo, h.stateRepo)
+	}(tx.FamilyID)
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ResolveTransactionForFamily valida o ID da rota, valida a sessão (claims),
+// busca a transação no banco e garante o isolamento multi-tenant (RLS) da família.
+// Retorna a transação e o ObjectID da família em caso de sucesso.
+// Se houver qualquer falha, escreve a resposta de erro apropriada no ResponseWriter
+// e retorna (nil, NilObjectID, false).
+func ResolveTransactionForFamily(
+	w http.ResponseWriter,
+	r *http.Request,
+	txRepo *repository.TransactionRepository,
+) (*models.Transaction, bson.ObjectID, bool) {
+	claims := middleware.GetClaims(r)
+	if claims == nil {
+		response.Error(w, http.StatusUnauthorized, "E_UNAUTHORIZED", "Não autenticado")
+		return nil, bson.NilObjectID, false
+	}
+
+	txIDHex := r.PathValue("id")
+	txID, err := bson.ObjectIDFromHex(txIDHex)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "E_VALIDATION", "O ID da transação informado é inválido")
+		return nil, bson.NilObjectID, false
+	}
+
+	familyID, err := bson.ObjectIDFromHex(claims.FamilyID)
+	if err != nil {
+		response.Error(w, http.StatusUnauthorized, "E_INVALID_SESSION", "Família inválida no token")
+		return nil, bson.NilObjectID, false
+	}
+
+	// Busca a transação e garante o isolamento multi-tenant combinando ID e FamilyID na consulta
+	tx, err := txRepo.FindByIDAndFamily(r.Context(), txID, familyID)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			response.Error(w, http.StatusNotFound, "E_NOT_FOUND", "Transação não localizada")
+			return nil, bson.NilObjectID, false
+		}
+		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha interna ao buscar transação")
+		return nil, bson.NilObjectID, false
+	}
+
+	return tx, familyID, true
+}
+
