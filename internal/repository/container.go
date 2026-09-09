@@ -16,8 +16,8 @@ type Container struct {
 	RefreshTokens *RefreshTokenRepository
 	Blocklist     *BlocklistRepository
 	Tags          *TagRepository
-	TagRules      *TagRuleRepository
 	Accounts      *AccountRepository
+	ClassifierStates *ClassifierStateRepository
 }
 
 // New cria um container já com todos os repositórios injetados com o banco de dados.
@@ -29,8 +29,8 @@ func New(db *mongo.Database) *Container {
 		RefreshTokens: NewRefreshTokenRepository(db),
 		Blocklist:     NewBlocklistRepository(db),
 		Tags:          NewTagRepository(db),
-		TagRules:      NewTagRuleRepository(db),
 		Accounts:      NewAccountRepository(db),
+		ClassifierStates: NewClassifierStateRepository(db),
 	}
 }
 
@@ -46,7 +46,7 @@ func (c *Container) EnsureIndexes(ctx context.Context) error {
 	if err := c.Blocklist.EnsureIndexes(ctx); err != nil {
 		return err
 	}
-	if err := c.TagRules.EnsureIndexes(ctx); err != nil {
+	if err := c.ClassifierStates.EnsureIndexes(ctx); err != nil {
 		return err
 	}
 	return nil

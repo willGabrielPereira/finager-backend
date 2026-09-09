@@ -34,10 +34,10 @@ func registerRoutes(
 	loginLimiter := middleware.NewInMemoryRateLimiter(10, time.Minute)
 	refreshLimiter := middleware.NewInMemoryRateLimiter(20, time.Minute)
 
-	txHandler := handlers.NewTransactionHandler(repos.Transactions, repos.Accounts, repos.TagRules)
+	txHandler := handlers.NewTransactionHandler(repos.Transactions, repos.Accounts, repos.Tags, repos.ClassifierStates)
 	tagHandler := handlers.NewTagHandler(repos.Tags)
-	tagRuleHandler := handlers.NewTagRuleHandler(repos.TagRules)
 	accHandler := handlers.NewAccountHandler(repos.Accounts)
+	aiHandler := handlers.NewAIHandler(repos.Transactions, repos.Tags, repos.ClassifierStates)
 
 	// ── Públicas ──────────────────────────────────────────────────────────────
 	mux.HandleFunc("GET /health", handlers.HealthHandler)
@@ -60,6 +60,9 @@ func registerRoutes(
 	// ── Transações ────────────────────────────────────────────────────────────
 	mux.Handle("POST /transactions/import", authMid(http.HandlerFunc(txHandler.Import)))
 	mux.Handle("GET /transactions", authMid(http.HandlerFunc(txHandler.List)))
+	mux.Handle("PUT /transactions/{id}", authMid(http.HandlerFunc(txHandler.Update)))
+	mux.Handle("POST /transactions/{id}/suggest-tags", authMid(http.HandlerFunc(aiHandler.SuggestTags)))
+	mux.Handle("POST /transactions/ai-auto-tag", authMid(http.HandlerFunc(aiHandler.AutoTagBatch)))
 
 	// ── Tags ──────────────────────────────────────────────────────────────────
 	mux.Handle("GET /tags", authMid(http.HandlerFunc(tagHandler.List)))
@@ -67,11 +70,7 @@ func registerRoutes(
 	mux.Handle("PUT /tags/{id}", authMid(http.HandlerFunc(tagHandler.Update)))
 	mux.Handle("DELETE /tags/{id}", authMid(http.HandlerFunc(tagHandler.Delete)))
 
-	// ── Regras de Auto-Tagging ────────────────────────────────────────────────
-	mux.Handle("GET /tag-rules", authMid(http.HandlerFunc(tagRuleHandler.List)))
-	mux.Handle("POST /tag-rules", authMid(http.HandlerFunc(tagRuleHandler.Create)))
-	mux.Handle("PUT /tag-rules/{id}", authMid(http.HandlerFunc(tagRuleHandler.Update)))
-	mux.Handle("DELETE /tag-rules/{id}", authMid(http.HandlerFunc(tagRuleHandler.Delete)))
+
 
 	// ── Contas bancárias ──────────────────────────────────────────────────────
 	mux.Handle("GET /accounts", authMid(http.HandlerFunc(accHandler.List)))
