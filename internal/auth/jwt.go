@@ -83,9 +83,9 @@ func NewService(secret string, expiresHours int) *Service {
 func (s *Service) GenerateToken(user *models.User) (string, error) {
 	now := time.Now()
 	claims := Claims{
-		UserID:   user.ID.Hex(),
+		UserID:   user.ID.String(),
 		Login:    user.Login,
-		FamilyID: user.FamilyID.Hex(),
+		FamilyID: user.FamilyID.String(),
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(s.expiresIn)),

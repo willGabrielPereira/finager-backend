@@ -4,92 +4,135 @@ import (
 	"context"
 	"time"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/willGabrielPereira/finager-backend/internal/models"
 )
 
 type AccountRepository struct {
-	coll *mongo.Collection
+	pool *pgxpool.Pool
 }
 
-func NewAccountRepository(db *mongo.Database) *AccountRepository {
-	return &AccountRepository{
-		coll: db.Collection("accounts"),
-	}
+func NewAccountRepository(pool *pgxpool.Pool) *AccountRepository {
+	return &AccountRepository{pool: pool}
 }
 
-// FindVisibleAccounts aplica a Regra de Negócio de Permissão de Visualização.
-// A conta entra na lista se: 
-// a) Pertencer à Família
-// b) E: [For publicamente compartilhada (Lista AllowedUsers vazia) OU O ID do usuario estiver lá dentro].
-func (r *AccountRepository) FindVisibleAccounts(ctx context.Context, familyID, userID bson.ObjectID) ([]*models.Account, error) {
-	filter := bson.M{
-		"family_id": familyID,
-		"$or": []bson.M{
-			{"allowed_users": bson.M{"$size": 0}},       // Compartilhado com todos
-			{"allowed_users": bson.M{"$exists": false}}, // Garantia extra legada
-			{"allowed_users": userID},                   // Restrição respeita acesso explícito
-		},
-	}
+func (r *AccountRepository) Create(ctx context.Context, account *models.Account) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 
-	cursor, err := r.coll.Find(ctx, filter)
-	if err != nil {
-		return nil, err
-	}
-	defer cursor.Close(ctx)
-
-	var accounts []*models.Account
-	if err := cursor.All(ctx, &accounts); err != nil {
-		return nil, err
-	}
-	
-	if accounts == nil {
-		accounts = []*models.Account{}
-	}
-	
-	return accounts, nil
-}
-
-// Create salva uma nova conta
-func (r *AccountRepository) Create(ctx context.Context, acc *models.Account) error {
-	acc.CreatedAt = time.Now()
-	acc.UpdatedAt = time.Now()
-	
-	// Previne nil slices atrapalhando queries de empty
-	if acc.AllowedUsers == nil {
-		acc.AllowedUsers = []bson.ObjectID{} 
-	}
-
-	res, err := r.coll.InsertOne(ctx, acc)
+	query := `
+		INSERT INTO accounts (name, institution, family_id, created_by)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, created_at, updated_at
+	`
+	err := r.pool.QueryRow(ctx, query, account.Name, account.Institution, account.FamilyID, account.CreatedBy).Scan(
+		&account.ID, &account.CreatedAt, &account.UpdatedAt,
+	)
 	if err != nil {
 		return err
 	}
-	if id, ok := res.InsertedID.(bson.ObjectID); ok {
-		acc.ID = id
+
+	for _, userID := range account.AllowedUsers {
+		_, err = r.pool.Exec(ctx, `INSERT INTO account_allowed_users (account_id, user_id) VALUES ($1, $2)`, account.ID, userID)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-// FindByID busca a conta crua. Usado em validações onde o middleware ou lógicas já blindaram scopes.
-func (r *AccountRepository) FindByID(ctx context.Context, id bson.ObjectID) (*models.Account, error) {
-	var a models.Account
-	if err := r.coll.FindOne(ctx, bson.M{"_id": id}).Decode(&a); err != nil {
+func (r *AccountRepository) FindVisibleAccounts(ctx context.Context, familyID, userID uuid.UUID) ([]*models.Account, error) {
+	query := `
+		SELECT a.id, a.name, a.institution, a.family_id, a.created_by, a.created_at, a.updated_at
+		FROM accounts a
+		LEFT JOIN account_allowed_users aau ON a.id = aau.account_id
+		WHERE a.family_id = $1
+		  AND (aau.user_id IS NULL OR aau.user_id = $2)
+		GROUP BY a.id
+	`
+	rows, err := r.pool.Query(ctx, query, familyID, userID)
+	if err != nil {
 		return nil, err
 	}
-	return &a, nil
+	defer rows.Close()
+
+	var accounts []*models.Account
+	for rows.Next() {
+		var acc models.Account
+		if err := rows.Scan(&acc.ID, &acc.Name, &acc.Institution, &acc.FamilyID, &acc.CreatedBy, &acc.CreatedAt, &acc.UpdatedAt); err != nil {
+			return nil, err
+		}
+		accounts = append(accounts, &acc)
+	}
+
+	for _, acc := range accounts {
+		rows, err := r.pool.Query(ctx, `SELECT user_id FROM account_allowed_users WHERE account_id = $1`, acc.ID)
+		if err == nil {
+			for rows.Next() {
+				var uID uuid.UUID
+				rows.Scan(&uID)
+				acc.AllowedUsers = append(acc.AllowedUsers, uID)
+			}
+			rows.Close()
+		}
+	}
+
+	if accounts == nil {
+		accounts = []*models.Account{}
+	}
+	return accounts, nil
 }
 
-// Update altera metadados e privacidades da conta
-func (r *AccountRepository) Update(ctx context.Context, id bson.ObjectID, updates bson.M) error {
-	updates["updated_at"] = time.Now()
-	_, err := r.coll.UpdateByID(ctx, id, bson.M{"$set": updates})
-	return err
+func (r *AccountRepository) FindByID(ctx context.Context, id uuid.UUID) (*models.Account, error) {
+	query := `SELECT id, name, institution, family_id, created_by, created_at, updated_at FROM accounts WHERE id = $1`
+	var acc models.Account
+	err := r.pool.QueryRow(ctx, query, id).Scan(&acc.ID, &acc.Name, &acc.Institution, &acc.FamilyID, &acc.CreatedBy, &acc.CreatedAt, &acc.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := r.pool.Query(ctx, `SELECT user_id FROM account_allowed_users WHERE account_id = $1`, acc.ID)
+	if err == nil {
+		for rows.Next() {
+			var uID uuid.UUID
+			rows.Scan(&uID)
+			acc.AllowedUsers = append(acc.AllowedUsers, uID)
+		}
+		rows.Close()
+	}
+
+	if acc.AllowedUsers == nil {
+		acc.AllowedUsers = []uuid.UUID{}
+	}
+	return &acc, nil
 }
 
-// Delete limpa a conta
-func (r *AccountRepository) Delete(ctx context.Context, id bson.ObjectID) error {
-	_, err := r.coll.DeleteOne(ctx, bson.M{"_id": id})
+func (r *AccountRepository) Update(ctx context.Context, account *models.Account) error {
+	query := `UPDATE accounts SET name = $1, institution = $2, updated_at = now() WHERE id = $3 AND family_id = $4`
+	_, err := r.pool.Exec(ctx, query, account.Name, account.Institution, account.ID, account.FamilyID)
+	if err != nil {
+		return err
+	}
+
+	_, err = r.pool.Exec(ctx, `DELETE FROM account_allowed_users WHERE account_id = $1`, account.ID)
+	if err != nil {
+		return err
+	}
+
+	for _, userID := range account.AllowedUsers {
+		_, err = r.pool.Exec(ctx, `INSERT INTO account_allowed_users (account_id, user_id) VALUES ($1, $2)`, account.ID, userID)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (r *AccountRepository) Delete(ctx context.Context, id, familyID uuid.UUID) error {
+	query := `DELETE FROM accounts WHERE id = $1 AND family_id = $2`
+	_, err := r.pool.Exec(ctx, query, id, familyID)
 	return err
 }

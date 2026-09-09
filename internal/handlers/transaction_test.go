@@ -15,7 +15,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.mongodb.org/mongo-driver/v2/bson"
+	"github.com/google/uuid"
 
 	"github.com/willGabrielPereira/finager-backend/internal/auth"
 	"github.com/willGabrielPereira/finager-backend/internal/handlers"
@@ -26,8 +26,8 @@ import (
 )
 
 func TestTransactionIntegrationAndSecurity(t *testing.T) {
-	// 1. Inicia o MongoDB Real (Descartável do Testcontainers)
-	db := testutil.SetupMongoDB(t)
+	db, cleanup := testutil.SetupPostgresContainer(t)
+	defer cleanup()
 	repos := repository.New(db)
 	err := repos.EnsureIndexes(context.Background())
 	require.NoError(t, err)
@@ -46,13 +46,21 @@ func TestTransactionIntegrationAndSecurity(t *testing.T) {
 	mux.Handle("POST /transactions/import", authMid(http.HandlerFunc(txHandler.Import)))
 	mux.Handle("GET /transactions", authMid(http.HandlerFunc(txHandler.List)))
 
-	// 4. Criação de cenários Multi-Tenant
-	familyA_ID := bson.NewObjectID()
-	familyB_ID := bson.NewObjectID()
+	familyA := &models.Family{ID: uuid.New(), Name: "Family A"}
+	familyB := &models.Family{ID: uuid.New(), Name: "Family B"}
+	_ = repos.Families.Create(context.Background(), familyA)
+	_ = repos.Families.Create(context.Background(), familyB)
 
-	userA := &models.User{ID: bson.NewObjectID(), Login: "alice", FamilyID: familyA_ID}
-	userB := &models.User{ID: bson.NewObjectID(), Login: "bob", FamilyID: familyB_ID}
-	userCharlie := &models.User{ID: bson.NewObjectID(), Login: "charlie", FamilyID: familyA_ID}
+	familyA_ID := familyA.ID
+	familyB_ID := familyB.ID
+
+	userA := &models.User{ID: uuid.New(), Login: "alice", FamilyID: familyA_ID}
+	userB := &models.User{ID: uuid.New(), Login: "bob", FamilyID: familyB_ID}
+	userCharlie := &models.User{ID: uuid.New(), Login: "charlie", FamilyID: familyA_ID}
+
+	_ = repos.Users.Create(context.Background(), userA)
+	_ = repos.Users.Create(context.Background(), userB)
+	_ = repos.Users.Create(context.Background(), userCharlie)
 
 	// Gera os Bearer tokens simulando um Login de sucesso
 	tokenUserA, _ := authSvc.GenerateToken(userA)
@@ -63,8 +71,8 @@ func TestTransactionIntegrationAndSecurity(t *testing.T) {
 	// TESTE A: Importação de OFX pela Alice (Família A)
 	// =====================================================================================
 	// 5. Instanciar Contas Bancárias para o Teste
-	accountSharedA := &models.Account{ID: bson.NewObjectID(), Name: "Shared Alice/Charlie", FamilyID: familyA_ID, AllowedUsers: []bson.ObjectID{}}
-	accountPrivateB := &models.Account{ID: bson.NewObjectID(), Name: "Private Bob", FamilyID: familyB_ID, AllowedUsers: []bson.ObjectID{userB.ID}}
+	accountSharedA := &models.Account{ID: uuid.New(), Name: "Shared Alice/Charlie", FamilyID: familyA_ID, CreatedBy: userA.ID, AllowedUsers: []uuid.UUID{}}
+	accountPrivateB := &models.Account{ID: uuid.New(), Name: "Private Bob", FamilyID: familyB_ID, CreatedBy: userB.ID, AllowedUsers: []uuid.UUID{userB.ID}}
 
 	_ = repos.Accounts.Create(context.Background(), accountSharedA)
 	_ = repos.Accounts.Create(context.Background(), accountPrivateB)
@@ -80,7 +88,7 @@ func TestTransactionIntegrationAndSecurity(t *testing.T) {
 		writer := multipart.NewWriter(&body)
 		
 		// Insere campo obrigatório Account ID
-		_ = writer.WriteField("account_id", accountSharedA.ID.Hex())
+		_ = writer.WriteField("account_id", accountSharedA.ID.String())
 		
 		part, _ := writer.CreateFormFile("file", filepath.Base(ofxPath))
 		io.Copy(part, file)
@@ -110,7 +118,7 @@ func TestTransactionIntegrationAndSecurity(t *testing.T) {
 		file, _ := os.Open(ofxPath)
 		var body bytes.Buffer
 		w := multipart.NewWriter(&body)
-		_ = w.WriteField("account_id", accountSharedA.ID.Hex())
+		_ = w.WriteField("account_id", accountSharedA.ID.String())
 		part, _ := w.CreateFormFile("file", filepath.Base(ofxPath))
 		io.Copy(part, file)
 		w.Close()

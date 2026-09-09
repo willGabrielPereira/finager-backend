@@ -8,8 +8,7 @@
 //
 // Variáveis de ambiente (mesmas do servidor principal):
 //
-//	MONGO_URI   (default: mongodb://localhost:27017)
-//	MONGO_DB    (default: finager)
+//	DATABASE_URL   (default: postgres://postgres:postgres@localhost:5432/finager?sslmode=disable)
 //
 // No Docker, execute antes de reiniciar o contêiner da API:
 //
@@ -33,19 +32,18 @@ func main() {
 		log.Println("Sem .env, usando variáveis de ambiente do sistema")
 	}
 
-	mongoURI := getEnv("MONGO_URI", "mongodb://localhost:27017")
-	mongoDB := getEnv("MONGO_DB", "finager")
+	dbDsn := getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/finager?sslmode=disable")
 
-	db, err := database.Connect(mongoURI, mongoDB)
+	db, err := database.Connect(dbDsn)
 	if err != nil {
-		log.Fatalf("Falha ao conectar ao MongoDB: %v", err)
+		log.Fatalf("Falha ao conectar ao PostgreSQL: %v", err)
 	}
 	defer db.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	runner := migrations.NewRunner(db.DB, migrations.All())
+	runner := migrations.NewRunner(db.Pool, migrations.All())
 
 	command := "up"
 	if len(os.Args) > 1 {

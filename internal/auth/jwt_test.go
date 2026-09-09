@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.mongodb.org/mongo-driver/v2/bson"
+	"github.com/google/uuid"
 
 	"github.com/willGabrielPereira/finager-backend/internal/auth"
 	"github.com/willGabrielPereira/finager-backend/internal/models"
@@ -19,9 +19,9 @@ func TestAuthService_TokenGeneration(t *testing.T) {
 	svc := auth.NewService(secret, 1) // 1 hora de expiração
 
 	user := &models.User{
-		ID:       bson.NewObjectID(),
+		ID:       uuid.New(),
 		Login:    "auth_tester",
-		FamilyID: bson.NewObjectID(),
+		FamilyID: uuid.New(),
 	}
 
 	t.Run("Generate and Validate Access Token", func(t *testing.T) {
@@ -31,9 +31,9 @@ func TestAuthService_TokenGeneration(t *testing.T) {
 
 		claims, err := svc.ValidateToken(tokenStr)
 		require.NoError(t, err)
-		assert.Equal(t, user.ID.Hex(), claims.UserID)
+		assert.Equal(t, user.ID.String(), claims.UserID)
 		assert.Equal(t, user.Login, claims.Login)
-		assert.Equal(t, user.FamilyID.Hex(), claims.FamilyID)
+		assert.Equal(t, user.FamilyID.String(), claims.FamilyID)
 		
 		// Validar que o token expira no futuro
 		assert.True(t, claims.ExpiresAt.Time.After(time.Now()))

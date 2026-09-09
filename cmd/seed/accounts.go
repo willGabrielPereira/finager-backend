@@ -4,13 +4,13 @@ import (
 	"context"
 	"log"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
+	"github.com/google/uuid"
 
 	"github.com/willGabrielPereira/finager-backend/internal/models"
 	"github.com/willGabrielPereira/finager-backend/internal/repository"
 )
 
-func ensureAccount(ctx context.Context, repo *repository.AccountRepository, name, institution string, familyID, creatorID bson.ObjectID, allowedUsers []bson.ObjectID) *models.Account {
+func ensureAccount(ctx context.Context, repo *repository.AccountRepository, name, institution string, familyID, creatorID uuid.UUID, allowedUsers []uuid.UUID) *models.Account {
 	// Simula idempotência pela instituição + nome dentro da família
 	visible, _ := repo.FindVisibleAccounts(ctx, familyID, creatorID)
 	for _, acc := range visible {

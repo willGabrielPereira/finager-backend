@@ -4,7 +4,7 @@ import (
 	"context"
 	"log"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/willGabrielPereira/finager-backend/internal/models"
@@ -13,7 +13,7 @@ import (
 
 // ensureUser encontra um usuário pelo login ou o cria com a senha fornecida.
 // Se o usuário já existe, garante que ele está vinculado à família correta.
-func ensureUser(ctx context.Context, repo *repository.UserRepository, login, password string, familyID bson.ObjectID) *models.User {
+func ensureUser(ctx context.Context, repo *repository.UserRepository, login, password string, familyID uuid.UUID) *models.User {
 	user, err := repo.FindByLogin(ctx, login)
 	if err == nil {
 		if err := repo.UpdateFamilyID(ctx, user.ID, familyID); err != nil {

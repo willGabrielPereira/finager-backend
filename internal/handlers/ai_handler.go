@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
+	"github.com/google/uuid"
 
 	"github.com/willGabrielPereira/finager-backend/internal/classifier"
 	"github.com/willGabrielPereira/finager-backend/internal/middleware"
@@ -54,7 +54,7 @@ func (h *AIHandler) SuggestTags(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. Carrega o classificador persistido de forma otimizada O(1)
-	c, err := classifier.GetOrBuildForFamily(r.Context(), familyID, h.tagRepo, h.txRepo, h.stateRepo)
+	c, err := classifier.GetOrBuildForFamily(r.Context(), &familyID, h.tagRepo, h.txRepo, h.stateRepo)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha ao inicializar o classificador de IA")
 		return
@@ -97,7 +97,7 @@ func (h *AIHandler) AutoTagBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	familyID, err := bson.ObjectIDFromHex(claims.FamilyID)
+	familyID, err := uuid.Parse(claims.FamilyID)
 	if err != nil {
 		response.Error(w, http.StatusUnauthorized, "E_INVALID_SESSION", "Sessão inválida")
 		return
@@ -119,7 +119,7 @@ func (h *AIHandler) AutoTagBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. Carrega o classificador persistido de forma otimizada O(1)
-	c, err := classifier.GetOrBuildForFamily(r.Context(), familyID, h.tagRepo, h.txRepo, h.stateRepo)
+	c, err := classifier.GetOrBuildForFamily(r.Context(), &familyID, h.tagRepo, h.txRepo, h.stateRepo)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha ao inicializar o classificador de IA")
 		return
@@ -138,9 +138,9 @@ func (h *AIHandler) AutoTagBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4. Reconstrói o estado compilado da IA em background após as atualizações
-	go func(fID bson.ObjectID) {
+	go func(fID *uuid.UUID) {
 		_, _ = classifier.RebuildStateForFamily(context.Background(), fID, h.tagRepo, h.txRepo, h.stateRepo)
-	}(familyID)
+	}(&familyID)
 
 	response.JSON(w, http.StatusOK, map[string]interface{}{
 		"tagged_count": taggedCount,

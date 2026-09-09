@@ -44,7 +44,7 @@ func Authenticate(svc *auth.Service, blocklist *repository.BlocklistRepository) 
 
 			// Check revocation blocklist — token may have been invalidated by logout.
 			tokenHash := svc.HashToken(rawToken)
-			blocked, err := blocklist.IsBlocked(r.Context(), tokenHash)
+			blocked, err := blocklist.Exists(r.Context(), tokenHash)
 			if err != nil || blocked {
 				w.WriteHeader(http.StatusUnauthorized)
 				_ = json.NewEncoder(w).Encode(map[string]string{"error": "token has been revoked"})

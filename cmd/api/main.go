@@ -37,14 +37,14 @@ func main() {
 	}
 
 	// ── Banco de dados ────────────────────────────────────────────────────────
-	db, err := database.Connect(cfg.MongoURI, cfg.MongoDB)
+	db, err := database.Connect(cfg.DatabaseDSN)
 	if err != nil {
-		log.Fatalf("Failed to connect to MongoDB: %v", err)
+		log.Fatalf("Falha ao conectar no PostgreSQL: %v", err)
 	}
 	defer db.Close()
 
-	// ── Repositórios ──────────────────────────────────────────────────────────
-	repos := repository.New(db.DB)
+	// 3. Inicializa repositórios injetando o Pool
+	repos := repository.New(db.Pool)
 
 	// ── Índices (idempotente — seguro executar em todo startup) ───────────────
 	startupCtx, cancelStartup := context.WithTimeout(context.Background(), 15*time.Second)

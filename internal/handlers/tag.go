@@ -5,9 +5,8 @@ import (
 	"errors"
 	"net/http"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
-
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/willGabrielPereira/finager-backend/internal/middleware"
 	"github.com/willGabrielPereira/finager-backend/internal/models"
 	"github.com/willGabrielPereira/finager-backend/internal/repository"
@@ -48,7 +47,7 @@ func (h *TagHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	familyID, err := bson.ObjectIDFromHex(claims.FamilyID)
+	familyID, err := uuid.Parse(claims.FamilyID)
 	if err != nil {
 		response.Error(w, http.StatusUnauthorized, "E_INVALID_SESSION", "invalid family in token")
 		return
@@ -85,7 +84,7 @@ func (h *TagHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	familyID, _ := bson.ObjectIDFromHex(claims.FamilyID)
+	familyID, _ := uuid.Parse(claims.FamilyID)
 
 	tag := &models.Tag{
 		Name:     req.Name,
@@ -115,17 +114,17 @@ func (h *TagHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tagIDHex := r.PathValue("id")
-	tagID, err := bson.ObjectIDFromHex(tagIDHex)
+	tagID, err := uuid.Parse(tagIDHex)
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, "E_VALIDATION", "O ID informado via URL é inoperável")
 		return
 	}
 
-	familyID, _ := bson.ObjectIDFromHex(claims.FamilyID)
+	familyID, _ := uuid.Parse(claims.FamilyID)
 
 	tag, err := h.tagRepo.FindByID(r.Context(), tagID)
 	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			response.Error(w, http.StatusNotFound, "E_NOT_FOUND", "A tag solicitada não foi localizada")
 			return
 		}
@@ -153,7 +152,7 @@ func (h *TagHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updates := bson.M{}
+	updates := map[string]interface{}{}
 	if req.Name != "" {
 		updates["name"] = req.Name
 	}
@@ -186,17 +185,17 @@ func (h *TagHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tagIDHex := r.PathValue("id")
-	tagID, err := bson.ObjectIDFromHex(tagIDHex)
+	tagID, err := uuid.Parse(tagIDHex)
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, "E_VALIDATION", "O ID informado via URL é inoperável")
 		return
 	}
 
-	familyID, _ := bson.ObjectIDFromHex(claims.FamilyID)
+	familyID, _ := uuid.Parse(claims.FamilyID)
 
 	tag, err := h.tagRepo.FindByID(r.Context(), tagID)
 	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			response.Error(w, http.StatusNotFound, "E_NOT_FOUND", "A tag solicitada não foi encontrada pra ser deletada")
 			return
 		}
@@ -214,7 +213,7 @@ func (h *TagHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.tagRepo.Delete(r.Context(), tagID); err != nil {
+	if err := h.tagRepo.Delete(r.Context(), tagID, familyID); err != nil {
 		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha de execução")
 		return
 	}

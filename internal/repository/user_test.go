@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.mongodb.org/mongo-driver/v2/bson"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/willGabrielPereira/finager-backend/internal/models"
@@ -16,8 +16,8 @@ import (
 )
 
 func TestUserRepository(t *testing.T) {
-	// Prepara um Mongo DB descartável, zerado só pra esse teste
-	db := testutil.SetupMongoDB(t)
+	db, cleanup := testutil.SetupPostgresContainer(t)
+	defer cleanup()
 	ctx := context.Background()
 
 	// Inicia o container de repositórios (já que o repo do usuário fica dentro dele agora)
@@ -26,7 +26,9 @@ func TestUserRepository(t *testing.T) {
 	require.NoError(t, err, "falha ao garantir índices")
 
 	t.Run("Create and FindByLogin", func(t *testing.T) {
-		familyID := bson.NewObjectID()
+		family := &models.Family{ID: uuid.New(), Name: "Test Family"}
+		_ = repos.Families.Create(ctx, family)
+		familyID := family.ID
 		pwHash, _ := bcrypt.GenerateFromPassword([]byte("123456"), 4)
 
 		user := &models.User{
@@ -39,7 +41,7 @@ func TestUserRepository(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verifica se foi gerado o ObjectId e timestamps
-		assert.False(t, user.ID.IsZero())
+		assert.NotEqual(t, uuid.Nil, user.ID)
 		assert.False(t, user.CreatedAt.IsZero())
 
 		// Busca e tenta dar o match
@@ -51,7 +53,9 @@ func TestUserRepository(t *testing.T) {
 	})
 
 	t.Run("Unique Login Index", func(t *testing.T) {
-		familyID := bson.NewObjectID()
+		family := &models.Family{ID: uuid.New(), Name: "Test Family 2"}
+		_ = repos.Families.Create(ctx, family)
+		familyID := family.ID
 		
 		u1 := &models.User{Login: "duplicated", FamilyID: familyID}
 		u2 := &models.User{Login: "duplicated", FamilyID: familyID}
@@ -65,7 +69,9 @@ func TestUserRepository(t *testing.T) {
 	})
 
 	t.Run("UpdatePassword", func(t *testing.T) {
-		u := &models.User{Login: "changepw", FamilyID: bson.NewObjectID()}
+		family := &models.Family{ID: uuid.New(), Name: "Test Family 3"}
+		_ = repos.Families.Create(ctx, family)
+		u := &models.User{Login: "changepw", FamilyID: family.ID}
 		_ = repos.Users.Create(ctx, u)
 
 		newHash := "new-fake-hash"

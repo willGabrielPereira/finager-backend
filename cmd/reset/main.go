@@ -15,19 +15,16 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
-	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"github.com/willGabrielPereira/finager-backend/internal/database"
 )
 
 func main() {
 	_ = godotenv.Load()
 
-	mongoURI := getEnv("MONGO_URI", "mongodb://localhost:27017")
-	mongoDB := getEnv("MONGO_DB", "finager")
+	dbDsn := getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/finager?sslmode=disable")
 
 	// Confirmação de segurança via stdin
-	fmt.Printf("⚠️  Isso irá apagar TODAS as transações do banco \"%s\".\n", mongoDB)
+	fmt.Println("⚠️  Isso irá apagar TODAS as transações do banco de dados.")
 	fmt.Print("   Digite 'sim' para confirmar: ")
 
 	var confirm string
@@ -40,21 +37,19 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	client, err := mongo.Connect(options.Client().ApplyURI(mongoURI))
+	db, err := database.Connect(dbDsn)
 	if err != nil {
-		log.Fatalf("Falha ao conectar ao MongoDB: %v", err)
+		log.Fatalf("Falha ao conectar ao PostgreSQL: %v", err)
 	}
-	defer client.Disconnect(ctx)
+	defer db.Close()
 
-	db := client.Database(mongoDB)
-
-	collections := []string{"transactions", "classifier_states"}
-	for _, col := range collections {
-		res, err := db.Collection(col).DeleteMany(ctx, bson.M{})
+	tables := []string{"transaction_tags", "transactions", "classifier_states"}
+	for _, table := range tables {
+		cmdTag, err := db.Pool.Exec(ctx, "DELETE FROM " + table)
 		if err != nil {
-			log.Fatalf("Erro ao limpar collection %q: %v", col, err)
+			log.Fatalf("Erro ao limpar tabela %q: %v", table, err)
 		}
-		fmt.Printf("✓ %-22s %d doc(s) removido(s)\n", col+":", res.DeletedCount)
+		fmt.Printf("✓ %-22s %d linha(s) removida(s)\n", table+":", cmdTag.RowsAffected())
 	}
 
 	fmt.Println("\n✓ Reset concluído. Suba o OFX novamente para reimportar as transações.")

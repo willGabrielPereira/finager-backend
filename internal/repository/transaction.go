@@ -2,80 +2,74 @@ package repository
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/willGabrielPereira/finager-backend/internal/models"
 )
 
-const collectionName = "transactions"
-
-// TransactionRepository encapsula as operações de persistência de Transaction.
 type TransactionRepository struct {
-	col *mongo.Collection
+	pool *pgxpool.Pool
 }
 
-// NewTransactionRepository cria um repositório apontando para a collection correta.
-func NewTransactionRepository(db *mongo.Database) *TransactionRepository {
-	return &TransactionRepository{col: db.Collection(collectionName)}
+func NewTransactionRepository(pool *pgxpool.Pool) *TransactionRepository {
+	return &TransactionRepository{pool: pool}
 }
 
-// UpsertResult resume o resultado de uma operação de upsert em lote.
 type UpsertResult struct {
 	Inserted int
 	Skipped  int
 }
 
-// BulkUpsert insere transações novas e ignora as que já existem.
-// A chave de unicidade é (fitid, account_id, family_id): a mesma transação
-// bancária pode existir em famílias diferentes sem conflito.
-// Retorna um resumo de quantas foram inseridas e quantas já existiam.
 func (r *TransactionRepository) BulkUpsert(ctx context.Context, txs []models.Transaction) (UpsertResult, error) {
 	if len(txs) == 0 {
 		return UpsertResult{}, nil
 	}
-
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
 	var result UpsertResult
 
 	for _, tx := range txs {
-		filter := bson.D{
-			{Key: "fitid", Value: tx.FITID},
-			{Key: "account_id", Value: tx.AccountID},
-			{Key: "family_id", Value: tx.FamilyID},
-		}
-
-		update := bson.D{
-			{Key: "$setOnInsert", Value: tx},
-		}
-
-		opts := options.UpdateOne().SetUpsert(true)
-		res, err := r.col.UpdateOne(ctx, filter, update, opts)
-		if err != nil {
+		var id uuid.UUID
+		query := `
+			INSERT INTO transactions (fitid, type, date_posted, amount, name, memo, account_id, family_id, created_by, imported_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			ON CONFLICT (fitid, account_id, family_id) DO NOTHING
+			RETURNING id
+		`
+		err := r.pool.QueryRow(ctx, query, tx.FITID, tx.Type, tx.DatePosted, tx.Amount, tx.Name, tx.Memo, tx.AccountID, tx.FamilyID, tx.CreatedBy, time.Now()).Scan(&id)
+		
+		if err == pgx.ErrNoRows {
+			result.Skipped++
+			continue
+		} else if err != nil {
 			return result, err
 		}
 
-		if res.UpsertedCount > 0 {
-			result.Inserted++
-		} else {
-			result.Skipped++
+		result.Inserted++
+		
+		for _, tagID := range tx.Tags {
+			_, err = r.pool.Exec(ctx, `INSERT INTO transaction_tags (transaction_id, tag_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, id, tagID)
+			if err != nil {
+				return result, err
+			}
 		}
 	}
 
 	return result, nil
 }
 
-// ListFilter agrupa todos os filtros aceitos pela operação List.
 type ListFilter struct {
-	FamilyID          bson.ObjectID   // obrigatório — todas as queries são escopadas por família
-	AllowedAccountIDs []bson.ObjectID // obrigatório — as contas bancárias em que a family/user possuem acesso
-	TagID             *bson.ObjectID  // filtrar por ID de tag
-	Type              string          // DEBIT | CREDIT
+	FamilyID          uuid.UUID
+	AllowedAccountIDs []uuid.UUID
+	TagID             *uuid.UUID
+	Type              string
 	DateFrom          time.Time
 	DateTo            time.Time
 	AmountMin         *float64
@@ -84,7 +78,6 @@ type ListFilter struct {
 	Limit             int
 }
 
-// PagedResult é o envelope de resposta paginada para transações.
 type PagedResult struct {
 	Data       []models.Transaction `json:"data"`
 	Total      int64                `json:"total"`
@@ -93,71 +86,104 @@ type PagedResult struct {
 	TotalPages int                  `json:"total_pages"`
 }
 
-// List retorna uma página de transações aplicando os filtros fornecidos.
-// Os resultados são ordenados por date_posted decrescente (mais recente primeiro).
 func (r *TransactionRepository) List(ctx context.Context, f ListFilter) (PagedResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	// family_id + account_id sempre formam a primeira barreira intransferível
-	// Isso garante o isolamento entre famílias ("family_id") e assegura que
-	// num cenário de contabilidade granular ("account_id in"), o usuário 
-	// sequer consiga ver extratos de subcontas que ele não compartilha.
-	filter := bson.D{
-		{Key: "family_id", Value: f.FamilyID},
-		{Key: "account_id", Value: bson.M{"$in": f.AllowedAccountIDs}},
+	whereClauses := []string{"t.family_id = $1"}
+	args := []interface{}{f.FamilyID}
+	argIdx := 2
+
+	if len(f.AllowedAccountIDs) > 0 {
+		var placeholders []string
+		for _, id := range f.AllowedAccountIDs {
+			placeholders = append(placeholders, fmt.Sprintf("$%d", argIdx))
+			args = append(args, id)
+			argIdx++
+		}
+		whereClauses = append(whereClauses, fmt.Sprintf("t.account_id IN (%s)", strings.Join(placeholders, ", ")))
+	} else {
+		// Se não tem conta permitida, retorna vazio
+		whereClauses = append(whereClauses, "1=0") 
 	}
 
 	if f.TagID != nil {
-		filter = append(filter, bson.E{Key: "tags", Value: *f.TagID})
+		whereClauses = append(whereClauses, fmt.Sprintf("EXISTS (SELECT 1 FROM transaction_tags tt WHERE tt.transaction_id = t.id AND tt.tag_id = $%d)", argIdx))
+		args = append(args, *f.TagID)
+		argIdx++
 	}
 
 	if f.Type != "" {
-		filter = append(filter, bson.E{Key: "type", Value: f.Type})
+		whereClauses = append(whereClauses, fmt.Sprintf("t.type = $%d", argIdx))
+		args = append(args, f.Type)
+		argIdx++
 	}
 
-	if !f.DateFrom.IsZero() || !f.DateTo.IsZero() {
-		dateFilter := bson.D{}
-		if !f.DateFrom.IsZero() {
-			dateFilter = append(dateFilter, bson.E{Key: "$gte", Value: f.DateFrom})
-		}
-		if !f.DateTo.IsZero() {
-			dateFilter = append(dateFilter, bson.E{Key: "$lte", Value: f.DateTo})
-		}
-		filter = append(filter, bson.E{Key: "date_posted", Value: dateFilter})
+	if !f.DateFrom.IsZero() {
+		whereClauses = append(whereClauses, fmt.Sprintf("t.date_posted >= $%d", argIdx))
+		args = append(args, f.DateFrom)
+		argIdx++
 	}
 
-	if f.AmountMin != nil || f.AmountMax != nil {
-		amountFilter := bson.D{}
-		if f.AmountMin != nil {
-			amountFilter = append(amountFilter, bson.E{Key: "$gte", Value: *f.AmountMin})
-		}
-		if f.AmountMax != nil {
-			amountFilter = append(amountFilter, bson.E{Key: "$lte", Value: *f.AmountMax})
-		}
-		filter = append(filter, bson.E{Key: "amount", Value: amountFilter})
+	if !f.DateTo.IsZero() {
+		whereClauses = append(whereClauses, fmt.Sprintf("t.date_posted <= $%d", argIdx))
+		args = append(args, f.DateTo)
+		argIdx++
 	}
 
-	total, err := r.col.CountDocuments(ctx, filter)
+	if f.AmountMin != nil {
+		whereClauses = append(whereClauses, fmt.Sprintf("t.amount >= $%d", argIdx))
+		args = append(args, *f.AmountMin)
+		argIdx++
+	}
+
+	if f.AmountMax != nil {
+		whereClauses = append(whereClauses, fmt.Sprintf("t.amount <= $%d", argIdx))
+		args = append(args, *f.AmountMax)
+		argIdx++
+	}
+
+	whereStr := "WHERE " + strings.Join(whereClauses, " AND ")
+
+	countQuery := `SELECT COUNT(*) FROM transactions t ` + whereStr
+	var total int64
+	err := r.pool.QueryRow(ctx, countQuery, args...).Scan(&total)
 	if err != nil {
 		return PagedResult{}, err
 	}
 
-	skip := int64((f.Page - 1) * f.Limit)
-	opts := options.Find().
-		SetSort(bson.D{{Key: "date_posted", Value: -1}}).
-		SetSkip(skip).
-		SetLimit(int64(f.Limit))
+	skip := (f.Page - 1) * f.Limit
+	args = append(args, f.Limit, skip)
+	query := `
+		SELECT t.id, t.fitid, t.type, t.date_posted, t.amount, t.name, t.memo, t.account_id, t.family_id, t.created_by, t.imported_at,
+		       COALESCE(array_agg(tt.tag_id) FILTER (WHERE tt.tag_id IS NOT NULL), '{}')
+		FROM transactions t
+		LEFT JOIN transaction_tags tt ON t.id = tt.transaction_id
+		` + whereStr + `
+		GROUP BY t.id
+		ORDER BY t.date_posted DESC
+		LIMIT $` + fmt.Sprintf("%d", argIdx) + ` OFFSET $` + fmt.Sprintf("%d", argIdx+1)
 
-	cursor, err := r.col.Find(ctx, filter, opts)
+	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
 		return PagedResult{}, err
 	}
-	defer cursor.Close(ctx)
+	defer rows.Close()
 
 	var txs []models.Transaction
-	if err := cursor.All(ctx, &txs); err != nil {
-		return PagedResult{}, err
+	for rows.Next() {
+		var tx models.Transaction
+		if err := rows.Scan(&tx.ID, &tx.FITID, &tx.Type, &tx.DatePosted, &tx.Amount, &tx.Name, &tx.Memo, &tx.AccountID, &tx.FamilyID, &tx.CreatedBy, &tx.ImportedAt, &tx.Tags); err != nil {
+			return PagedResult{}, err
+		}
+		if tx.Tags == nil {
+			tx.Tags = []uuid.UUID{}
+		}
+		txs = append(txs, tx)
+	}
+
+	if txs == nil {
+		txs = []models.Transaction{}
 	}
 
 	totalPages := int((total + int64(f.Limit) - 1) / int64(f.Limit))
@@ -171,105 +197,140 @@ func (r *TransactionRepository) List(ctx context.Context, f ListFilter) (PagedRe
 	}, nil
 }
 
-// FindByID busca uma transação específica por ID.
-func (r *TransactionRepository) FindByID(ctx context.Context, id bson.ObjectID) (*models.Transaction, error) {
+func (r *TransactionRepository) FindByID(ctx context.Context, id uuid.UUID) (*models.Transaction, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
+	query := `
+		SELECT t.id, t.fitid, t.type, t.date_posted, t.amount, t.name, t.memo, t.account_id, t.family_id, t.created_by, t.imported_at,
+		       COALESCE(array_agg(tt.tag_id) FILTER (WHERE tt.tag_id IS NOT NULL), '{}')
+		FROM transactions t
+		LEFT JOIN transaction_tags tt ON t.id = tt.transaction_id
+		WHERE t.id = $1
+		GROUP BY t.id
+	`
 	var tx models.Transaction
-	err := r.col.FindOne(ctx, bson.M{"_id": id}).Decode(&tx)
+	err := r.pool.QueryRow(ctx, query, id).Scan(&tx.ID, &tx.FITID, &tx.Type, &tx.DatePosted, &tx.Amount, &tx.Name, &tx.Memo, &tx.AccountID, &tx.FamilyID, &tx.CreatedBy, &tx.ImportedAt, &tx.Tags)
 	if err != nil {
 		return nil, err
+	}
+	if tx.Tags == nil {
+		tx.Tags = []uuid.UUID{}
 	}
 	return &tx, nil
 }
 
-// UpdateTags altera a lista de tags vinculadas a uma transação.
-func (r *TransactionRepository) UpdateTags(ctx context.Context, id bson.ObjectID, tagIDs []bson.ObjectID) error {
+func (r *TransactionRepository) UpdateTags(ctx context.Context, id uuid.UUID, tagIDs []uuid.UUID) error {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	if tagIDs == nil {
-		tagIDs = []bson.ObjectID{}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `DELETE FROM transaction_tags WHERE transaction_id = $1`, id)
+	if err != nil {
+		return err
 	}
 
-	_, err := r.col.UpdateByID(ctx, id, bson.M{"$set": bson.M{"tags": tagIDs}})
-	return err
+	for _, tagID := range tagIDs {
+		_, err = tx.Exec(ctx, `INSERT INTO transaction_tags (transaction_id, tag_id) VALUES ($1, $2)`, id, tagID)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
 }
 
-// FindAllTagged retorna todas as transações da família que já possuem pelo menos uma tag.
-// Se familyID for bson.NilObjectID, busca transações categorizadas em todo o sistema (treino global).
-func (r *TransactionRepository) FindAllTagged(ctx context.Context, familyID bson.ObjectID) ([]models.Transaction, error) {
+func (r *TransactionRepository) FindAllTagged(ctx context.Context, familyID *uuid.UUID) ([]models.Transaction, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	filter := bson.M{
-		"tags": bson.M{
-			"$exists": true,
-			"$not":    bson.M{"$size": 0},
-		},
-	}
-	if familyID != bson.NilObjectID {
-		filter["family_id"] = familyID
+	whereClause := ""
+	args := []interface{}{}
+	if familyID != nil {
+		whereClause = "WHERE t.family_id = $1"
+		args = append(args, *familyID)
 	}
 
-	cursor, err := r.col.Find(ctx, filter)
+	query := `
+		SELECT t.id, t.fitid, t.type, t.date_posted, t.amount, t.name, t.memo, t.account_id, t.family_id, t.created_by, t.imported_at,
+		       array_agg(tt.tag_id)
+		FROM transactions t
+		INNER JOIN transaction_tags tt ON t.id = tt.transaction_id
+		` + whereClause + `
+		GROUP BY t.id
+	`
+	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer rows.Close()
 
 	var txs []models.Transaction
-	if err := cursor.All(ctx, &txs); err != nil {
-		return nil, err
+	for rows.Next() {
+		var tx models.Transaction
+		if err := rows.Scan(&tx.ID, &tx.FITID, &tx.Type, &tx.DatePosted, &tx.Amount, &tx.Name, &tx.Memo, &tx.AccountID, &tx.FamilyID, &tx.CreatedBy, &tx.ImportedAt, &tx.Tags); err != nil {
+			return nil, err
+		}
+		if tx.Tags == nil {
+			tx.Tags = []uuid.UUID{}
+		}
+		txs = append(txs, tx)
 	}
 	return txs, nil
 }
 
-// FindAllUntagged retorna todas as transações da família que não possuem tags.
-func (r *TransactionRepository) FindAllUntagged(ctx context.Context, familyID bson.ObjectID) ([]models.Transaction, error) {
+func (r *TransactionRepository) FindAllUntagged(ctx context.Context, familyID uuid.UUID) ([]models.Transaction, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	filter := bson.M{
-		"family_id": familyID,
-		"$or": []bson.M{
-			{"tags": bson.M{"$exists": false}},
-			{"tags": bson.M{"$size": 0}},
-			{"tags": nil},
-		},
-	}
-
-	cursor, err := r.col.Find(ctx, filter)
+	query := `
+		SELECT t.id, t.fitid, t.type, t.date_posted, t.amount, t.name, t.memo, t.account_id, t.family_id, t.created_by, t.imported_at
+		FROM transactions t
+		LEFT JOIN transaction_tags tt ON t.id = tt.transaction_id
+		WHERE t.family_id = $1 AND tt.tag_id IS NULL
+	`
+	rows, err := r.pool.Query(ctx, query, familyID)
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer rows.Close()
 
 	var txs []models.Transaction
-	if err := cursor.All(ctx, &txs); err != nil {
-		return nil, err
+	for rows.Next() {
+		var tx models.Transaction
+		if err := rows.Scan(&tx.ID, &tx.FITID, &tx.Type, &tx.DatePosted, &tx.Amount, &tx.Name, &tx.Memo, &tx.AccountID, &tx.FamilyID, &tx.CreatedBy, &tx.ImportedAt); err != nil {
+			return nil, err
+		}
+		tx.Tags = []uuid.UUID{}
+		txs = append(txs, tx)
 	}
 	return txs, nil
 }
 
-// FindByIDAndFamily busca uma transação por ID garantindo que ela pertence à família especificada.
-func (r *TransactionRepository) FindByIDAndFamily(ctx context.Context, id, familyID bson.ObjectID) (*models.Transaction, error) {
+func (r *TransactionRepository) FindByIDAndFamily(ctx context.Context, id, familyID uuid.UUID) (*models.Transaction, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
+	query := `
+		SELECT t.id, t.fitid, t.type, t.date_posted, t.amount, t.name, t.memo, t.account_id, t.family_id, t.created_by, t.imported_at,
+		       COALESCE(array_agg(tt.tag_id) FILTER (WHERE tt.tag_id IS NOT NULL), '{}')
+		FROM transactions t
+		LEFT JOIN transaction_tags tt ON t.id = tt.transaction_id
+		WHERE t.id = $1 AND t.family_id = $2
+		GROUP BY t.id
+	`
 	var tx models.Transaction
-	filter := bson.M{
-		"_id":       id,
-		"family_id": familyID,
-	}
-	err := r.col.FindOne(ctx, filter).Decode(&tx)
+	err := r.pool.QueryRow(ctx, query, id, familyID).Scan(&tx.ID, &tx.FITID, &tx.Type, &tx.DatePosted, &tx.Amount, &tx.Name, &tx.Memo, &tx.AccountID, &tx.FamilyID, &tx.CreatedBy, &tx.ImportedAt, &tx.Tags)
 	if err != nil {
 		return nil, err
+	}
+	if tx.Tags == nil {
+		tx.Tags = []uuid.UUID{}
 	}
 	return &tx, nil
 }
-
-
-
-
