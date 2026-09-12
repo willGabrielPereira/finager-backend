@@ -93,3 +93,23 @@ func TestClassifier_Empty(t *testing.T) {
 		t.Errorf("Empty classifier should return nil, got %v", got)
 	}
 }
+
+func TestCleanMerchantName(t *testing.T) {
+	tests := []struct {
+		name     string
+		memo     string
+		expected string
+	}{
+		{"COMPRA CARTAO DEB UBER *TRIP", "SAO PAULO BR", "UBER *TRIP"},
+		{"PIX TRANSF LUCAS SILVA", "CHAVE CPF", "LUCAS SILVA"},
+		{"PAGTO ELETRON COBRANCA ENEL ENERGIA", "", "ENEL ENERGIA"},
+		{"MERCADO LIVRE", "", "MERCADO LIVRE"},
+	}
+
+	for _, tt := range tests {
+		got := classifier.CleanMerchantName(tt.name, tt.memo)
+		if got != tt.expected {
+			t.Errorf("CleanMerchantName(%q, %q) = %q, want %q", tt.name, tt.memo, got, tt.expected)
+		}
+	}
+}

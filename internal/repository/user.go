@@ -93,3 +93,14 @@ func (r *UserRepository) UpdateFamilyID(ctx context.Context, userID, familyID uu
 	_, err := r.pool.Exec(ctx, query, familyID, userID)
 	return err
 }
+
+// UpdateLogin atualiza o nome de usuário (login).
+func (r *UserRepository) UpdateLogin(ctx context.Context, userID uuid.UUID, login string) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	query := `UPDATE users SET login = $1, updated_at = now() WHERE id = $2`
+	_, err := r.pool.Exec(ctx, query, login, userID)
+	return err
+}
+

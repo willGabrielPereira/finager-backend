@@ -54,17 +54,22 @@ CREATE TABLE IF NOT EXISTS account_allowed_users (
 );
 
 CREATE TABLE IF NOT EXISTS transactions (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    fitid       TEXT        NOT NULL,
-    type        TEXT        NOT NULL,  -- DEBIT | CREDIT
-    date_posted TIMESTAMPTZ NOT NULL,
-    amount      NUMERIC(15,2) NOT NULL,
-    name        TEXT        NOT NULL DEFAULT '',
-    memo        TEXT        NOT NULL DEFAULT '',
-    account_id  UUID        NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    family_id   UUID        NOT NULL REFERENCES families(id) ON DELETE CASCADE,
-    created_by  UUID        NOT NULL REFERENCES users(id),
-    imported_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    fitid                  TEXT        NOT NULL,
+    type                   TEXT        NOT NULL,  -- DEBIT | CREDIT
+    date_posted            TIMESTAMPTZ NOT NULL,
+    amount                 NUMERIC(15,2) NOT NULL,
+    name                   TEXT        NOT NULL DEFAULT '',
+    memo                   TEXT        NOT NULL DEFAULT '',
+    account_id             UUID        NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    family_id              UUID        NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+    created_by             UUID        NOT NULL REFERENCES users(id),
+    imported_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    manually_tagged        BOOLEAN     NOT NULL DEFAULT false,
+    status                 TEXT        NOT NULL DEFAULT 'POSTED', -- POSTED, PLANNED, PENDING_RECONCILIATION, RECONCILED
+    is_transfer            BOOLEAN     NOT NULL DEFAULT false,
+    destination_account_id UUID        REFERENCES accounts(id) ON DELETE SET NULL,
+    source                 TEXT        NOT NULL DEFAULT 'OFX', -- OFX, MANUAL, RECEIPT
     UNIQUE (fitid, account_id, family_id)
 );
 
@@ -73,6 +78,17 @@ CREATE TABLE IF NOT EXISTS transaction_tags (
     transaction_id UUID NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
     tag_id         UUID NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
     PRIMARY KEY (transaction_id, tag_id)
+);
+
+-- Memória de estabelecimentos (Merchant Memory para Camada 1 de alta precisão)
+CREATE TABLE IF NOT EXISTS merchant_mappings (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    family_id  UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+    pattern    TEXT NOT NULL,
+    tag_id     UUID NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (family_id, pattern)
 );
 
 CREATE TABLE IF NOT EXISTS refresh_tokens (
@@ -105,6 +121,8 @@ CREATE TABLE IF NOT EXISTS classifier_states (
 -- Índices de performance
 CREATE INDEX IF NOT EXISTS idx_transactions_family_date ON transactions(family_id, date_posted DESC);
 CREATE INDEX IF NOT EXISTS idx_transactions_account ON transactions(account_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(family_id, status);
+CREATE INDEX IF NOT EXISTS idx_merchant_mappings_family ON merchant_mappings(family_id);
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_blocklist_expires ON blocklist(expires_at);
 CREATE INDEX IF NOT EXISTS idx_tags_family ON tags(family_id);

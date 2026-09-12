@@ -100,3 +100,14 @@ func (r *FamilyRepository) AddMember(ctx context.Context, familyID, userID uuid.
 	_, err = r.pool.Exec(ctx, updateQuery, familyID)
 	return err
 }
+
+// UpdateName atualiza o nome da família.
+func (r *FamilyRepository) UpdateName(ctx context.Context, familyID uuid.UUID, name string) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	query := `UPDATE families SET name = $1, updated_at = now() WHERE id = $2`
+	_, err := r.pool.Exec(ctx, query, name, familyID)
+	return err
+}
+
