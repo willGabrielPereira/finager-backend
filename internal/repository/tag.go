@@ -2,47 +2,46 @@ package repository
 
 import (
 	"context"
-	"time"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/willGabrielPereira/finager-backend/internal/models"
 )
 
 type TagRepository struct {
-	coll *mongo.Collection
+	pool *pgxpool.Pool
 }
 
-func NewTagRepository(db *mongo.Database) *TagRepository {
-	return &TagRepository{
-		coll: db.Collection("tags"),
-	}
+func NewTagRepository(pool *pgxpool.Pool) *TagRepository {
+	return &TagRepository{pool: pool}
 }
 
 // FindAllVisible busca tags do sistema (compartilhadas globalmente) 
 // somadas às tags customizadas exclusivas desta família.
-func (r *TagRepository) FindAllVisible(ctx context.Context, familyID bson.ObjectID) ([]*models.Tag, error) {
-	filter := bson.M{
-		"$or": []bson.M{
-			{"is_system": true},
-			{"family_id": familyID},
-		},
-	}
-
-	cursor, err := r.coll.Find(ctx, filter)
+func (r *TagRepository) FindAllVisible(ctx context.Context, familyID uuid.UUID) ([]*models.Tag, error) {
+	query := `
+		SELECT id, name, color, icon, family_id, is_system, created_at
+		FROM tags
+		WHERE is_system = true OR family_id = $1
+		ORDER BY name ASC
+	`
+	rows, err := r.pool.Query(ctx, query, familyID)
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer rows.Close()
 
 	var tags []*models.Tag
-	if err := cursor.All(ctx, &tags); err != nil {
-		return nil, err
+	for rows.Next() {
+		var tag models.Tag
+		if err := rows.Scan(&tag.ID, &tag.Name, &tag.Color, &tag.Icon, &tag.FamilyID, &tag.IsSystem, &tag.CreatedAt); err != nil {
+			return nil, err
+		}
+		tags = append(tags, &tag)
 	}
 
-	// Se não veio nada, protege o frontend mandando um array vazio e não null.
 	if tags == nil {
 		tags = []*models.Tag{}
 	}
@@ -52,20 +51,20 @@ func (r *TagRepository) FindAllVisible(ctx context.Context, familyID bson.Object
 
 // Create permite criar tags customizadas
 func (r *TagRepository) Create(ctx context.Context, tag *models.Tag) error {
-	res, err := r.coll.InsertOne(ctx, tag)
-	if err != nil {
-		return err
-	}
-	if id, ok := res.InsertedID.(bson.ObjectID); ok {
-		tag.ID = id
-	}
-	return nil
+	query := `
+		INSERT INTO tags (name, color, icon, family_id, is_system)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, created_at
+	`
+	err := r.pool.QueryRow(ctx, query, tag.Name, tag.Color, tag.Icon, tag.FamilyID, tag.IsSystem).Scan(&tag.ID, &tag.CreatedAt)
+	return err
 }
 
 // FindByID busca uma tag especifica.
-func (r *TagRepository) FindByID(ctx context.Context, id bson.ObjectID) (*models.Tag, error) {
+func (r *TagRepository) FindByID(ctx context.Context, id uuid.UUID) (*models.Tag, error) {
 	var tag models.Tag
-	err := r.coll.FindOne(ctx, bson.M{"_id": id}).Decode(&tag)
+	query := `SELECT id, name, color, icon, family_id, is_system, created_at FROM tags WHERE id = $1`
+	err := r.pool.QueryRow(ctx, query, id).Scan(&tag.ID, &tag.Name, &tag.Color, &tag.Icon, &tag.FamilyID, &tag.IsSystem, &tag.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -73,53 +72,94 @@ func (r *TagRepository) FindByID(ctx context.Context, id bson.ObjectID) (*models
 }
 
 // Update altera configurações visuais de uma tag (Color, Icon, Name)
-func (r *TagRepository) Update(ctx context.Context, id bson.ObjectID, updates bson.M) error {
-	_, err := r.coll.UpdateByID(ctx, id, bson.M{"$set": updates})
+func (r *TagRepository) Update(ctx context.Context, id uuid.UUID, updates map[string]interface{}) error {
+	// Updates suportados: name, color, icon
+	// Simplificado para atualizar a tag inteira já que a rota de update passa todos os campos
+	// Mas como a assinatura antiga usava bson.M, vamos implementar com map provisoriamente
+	// É melhor atualizar os campos nomeados ou iterar no map.
+	// Por simplicidade, assumimos que o chamador só envia name, color e icon.
+	
+	name, okName := updates["name"].(string)
+	color, okColor := updates["color"].(string)
+	icon, okIcon := updates["icon"].(string)
+
+	query := `UPDATE tags SET `
+	args := []interface{}{}
+	i := 1
+
+	if okName {
+		query += `name = $` + string(rune(48+i)) + `, `
+		args = append(args, name)
+		i++
+	}
+	if okColor {
+		query += `color = $` + string(rune(48+i)) + `, `
+		args = append(args, color)
+		i++
+	}
+	if okIcon {
+		query += `icon = $` + string(rune(48+i)) + ` `
+		args = append(args, icon)
+		i++
+	}
+
+	// Remove trailing comma if present and finish query
+	if query[len(query)-2:] == ", " {
+		query = query[:len(query)-2]
+	}
+	query += ` WHERE id = $` + string(rune(48+i))
+	args = append(args, id)
+
+	_, err := r.pool.Exec(ctx, query, args...)
 	return err
 }
 
 // Delete remove uma tag permanentemente.
-func (r *TagRepository) Delete(ctx context.Context, id bson.ObjectID) error {
-	_, err := r.coll.DeleteOne(ctx, bson.M{"_id": id})
+func (r *TagRepository) Delete(ctx context.Context, id uuid.UUID, familyID uuid.UUID) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM tags WHERE id = $1 AND family_id = $2`, id, familyID)
 	return err
 }
 
 // UpsertSystemTag insere ou atualiza uma tag global baseada no seu nome de forma IDEMPOTENTE.
 // Excelente pra ser usado pelo script de Seed durante cada deployment.
 func (r *TagRepository) UpsertSystemTag(ctx context.Context, tag *models.Tag) error {
-	filter := bson.M{
-		"is_system": true,
-		"name":      tag.Name,
-	}
+
+	// O Postgres precisa de UNIQUE index para o ON CONFLICT funcionar sem quebrar,
+	// vamos fazer um upsert manual com verificação se não houver index único
 	
-	update := bson.M{
-		"$set": bson.M{
-			"color": tag.Color,
-			"icon":  tag.Icon,
-		},
-		"$setOnInsert": bson.M{
-			"created_at": time.Now(),
-		},
+	var existingID uuid.UUID
+	err := r.pool.QueryRow(ctx, `SELECT id FROM tags WHERE is_system = true AND name = $1`, tag.Name).Scan(&existingID)
+	if err == pgx.ErrNoRows {
+		// Insert
+		insertQuery := `INSERT INTO tags (name, color, icon, is_system) VALUES ($1, $2, $3, true) RETURNING id`
+		return r.pool.QueryRow(ctx, insertQuery, tag.Name, tag.Color, tag.Icon).Scan(&tag.ID)
+	} else if err == nil {
+		// Update
+		updateQuery := `UPDATE tags SET color = $1, icon = $2 WHERE id = $3`
+		_, err = r.pool.Exec(ctx, updateQuery, tag.Color, tag.Icon, existingID)
+		tag.ID = existingID
+		return err
 	}
-	
-	opts := options.UpdateOne().SetUpsert(true)
-	_, err := r.coll.UpdateOne(ctx, filter, update, opts)
 	return err
 }
 
 // FindSystemTags retorna todas as tags globais de sistema.
 // Usado pelo seed para resolver nome → ObjectID antes de criar as TagRules.
 func (r *TagRepository) FindSystemTags(ctx context.Context) ([]*models.Tag, error) {
-	cursor, err := r.coll.Find(ctx, bson.M{"is_system": true})
+	query := `SELECT id, name, color, icon, family_id, is_system, created_at FROM tags WHERE is_system = true`
+	rows, err := r.pool.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer rows.Close()
 
 	var tags []*models.Tag
-	if err := cursor.All(ctx, &tags); err != nil {
-		return nil, err
+	for rows.Next() {
+		var tag models.Tag
+		if err := rows.Scan(&tag.ID, &tag.Name, &tag.Color, &tag.Icon, &tag.FamilyID, &tag.IsSystem, &tag.CreatedAt); err != nil {
+			return nil, err
+		}
+		tags = append(tags, &tag)
 	}
 	return tags, nil
 }
-

@@ -4,7 +4,7 @@ import (
 	"context"
 	"log"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
+	"github.com/google/uuid"
 
 	"github.com/willGabrielPereira/finager-backend/internal/models"
 	"github.com/willGabrielPereira/finager-backend/internal/repository"
@@ -13,7 +13,7 @@ import (
 // ensureSystemTags garante que todas as tags globais do sistema estão no banco.
 // Retorna um mapa de nome → ObjectID para ser usado na criação das TagRules.
 // Idempotente: pode ser executado em todo deployment.
-func ensureSystemTags(ctx context.Context, repo *repository.TagRepository) map[string]bson.ObjectID {
+func ensureSystemTags(ctx context.Context, repo *repository.TagRepository) map[string]uuid.UUID {
 	defs := []models.Tag{
 		{Name: "Alimentação", Color: "#E53935", Icon: "restaurant", IsSystem: true},
 		{Name: "Educação", Color: "#1E88E5", Icon: "school", IsSystem: true},
@@ -42,7 +42,7 @@ func ensureSystemTags(ctx context.Context, repo *repository.TagRepository) map[s
 		log.Fatalf("Falha ao buscar system tags após seed: %v", err)
 	}
 
-	nameToID := make(map[string]bson.ObjectID, len(systemTags))
+	nameToID := make(map[string]uuid.UUID, len(systemTags))
 	for _, t := range systemTags {
 		nameToID[t.Name] = t.ID
 	}

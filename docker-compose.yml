@@ -11,56 +11,37 @@ services:
     env_file:
       - .env
     environment:
-      # Override the default localhost URI so the API reaches the mongo service.
-      MONGO_URI: mongodb://mongo:27017
+      DATABASE_URL: postgres://postgres:postgres@db:5432/finager?sslmode=disable
     depends_on:
-      mongo:
+      db:
         condition: service_healthy
     networks:
       - finager_net
 
-  # ─── MongoDB ─────────────────────────────────────────────────────────────────
-  mongo:
-    image: mongo:7.0
-    container_name: finager_mongo
+  # ─── PostgreSQL ─────────────────────────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    container_name: finager_db
     restart: unless-stopped
     ports:
-      - "27017:27017"   # Exposed so you can connect with Compass/mongosh locally
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: finager
     volumes:
-      - mongo_data:/data/db
+      - pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
-    networks:
-      - finager_net
-
-  # ─── Mongo Express (UI Web) ───────────────────────────────────────────────────
-  mongo-express:
-    image: mongo-express:latest
-    container_name: finager_mongo_express
-    restart: unless-stopped
-    ports:
-      - "8081:8081"
-    environment:
-      # Conecta ao serviço 'mongo' definido acima
-      ME_CONFIG_MONGODB_SERVER: mongo
-      ME_CONFIG_MONGODB_PORT: 27017
-      ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
-      # Credenciais de acesso à interface web
-      ME_CONFIG_BASICAUTH_USERNAME: "admin"
-      ME_CONFIG_BASICAUTH_PASSWORD: "password"
-    depends_on:
-      mongo:
-        condition: service_healthy
     networks:
       - finager_net
 
 # ─── Volumes ──────────────────────────────────────────────────────────────────
 volumes:
-  mongo_data:
+  pg_data:
 
 # ─── Networks ─────────────────────────────────────────────────────────────────
 networks:

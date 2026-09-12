@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"time"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/willGabrielPereira/finager-backend/internal/classifier"
 	"github.com/willGabrielPereira/finager-backend/internal/middleware"
@@ -76,13 +76,13 @@ func (h *TransactionHandler) Import(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	familyID, err := bson.ObjectIDFromHex(claims.FamilyID)
+	familyID, err := uuid.Parse(claims.FamilyID)
 	if err != nil {
 		response.Error(w, http.StatusUnauthorized, "E_INVALID_SESSION", "A família vinculada a este login é inválida")
 		return
 	}
 
-	userID, err := bson.ObjectIDFromHex(claims.UserID)
+	userID, err := uuid.Parse(claims.UserID)
 	if err != nil {
 		response.Error(w, http.StatusUnauthorized, "E_INVALID_SESSION", "O token atrelado a este usuário é inválido")
 		return
@@ -107,7 +107,7 @@ func (h *TransactionHandler) Import(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	accountID, err := bson.ObjectIDFromHex(accountIDHex)
+	accountID, err := uuid.Parse(accountIDHex)
 	if err != nil {
 		response.Validations(w, response.ValidationError{
 			Field: "account_id", Rule: "objectid", Message: "Identificador de formulário enviado num formato corrompido",
@@ -144,7 +144,7 @@ func (h *TransactionHandler) Import(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	transactions, err := ofxparser.Parse(file)
+	transactions, err := ofxparser.Parse(file, accountID, familyID, userID)
 	if err != nil {
 		response.Validations(w, response.ValidationError{
 			Field: "file", Rule: "invalid_format", Message: "O arquivo OFX está corrompido ou fora do formato estrito: " + err.Error(),
@@ -153,7 +153,7 @@ func (h *TransactionHandler) Import(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Inicializa o classificador local persistido de forma otimizada O(1)
-	c, err := classifier.GetOrBuildForFamily(r.Context(), familyID, h.tagRepo, h.txRepo, h.stateRepo)
+	c, err := classifier.GetOrBuildForFamily(r.Context(), &familyID, h.tagRepo, h.txRepo, h.stateRepo)
 	if err != nil {
 		c = nil
 	}
@@ -214,13 +214,13 @@ func (h *TransactionHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	familyID, err := bson.ObjectIDFromHex(claims.FamilyID)
+	familyID, err := uuid.Parse(claims.FamilyID)
 	if err != nil {
 		response.Error(w, http.StatusUnauthorized, "E_INVALID_SESSION", "invalid family in token")
 		return
 	}
 
-	userID, err := bson.ObjectIDFromHex(claims.UserID)
+	userID, err := uuid.Parse(claims.UserID)
 	if err != nil {
 		response.Error(w, http.StatusUnauthorized, "E_INVALID_SESSION", "invalid user in token")
 		return
@@ -249,7 +249,7 @@ func (h *TransactionHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	
 	// Extrai apenas os IDs validos
-	var allowedAccountIDs []bson.ObjectID
+	var allowedAccountIDs []uuid.UUID
 	for _, acc := range visibleAccs {
 		allowedAccountIDs = append(allowedAccountIDs, acc.ID)
 	}
@@ -275,7 +275,7 @@ func (h *TransactionHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if v := q.Get("tag"); v != "" {
-		if tagID, err := bson.ObjectIDFromHex(v); err == nil {
+		if tagID, err := uuid.Parse(v); err == nil {
 			filter.TagID = &tagID
 		}
 	}
@@ -353,9 +353,9 @@ func (h *TransactionHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Conversão de IDs de tag para bson.ObjectID
-	var tagIDs []bson.ObjectID
+	var tagIDs []uuid.UUID
 	for _, tagHex := range req.Tags {
-		tagID, err := bson.ObjectIDFromHex(tagHex)
+		tagID, err := uuid.Parse(tagHex)
 		if err != nil {
 			response.Error(w, http.StatusBadRequest, "E_VALIDATION", "ID de tag inválido: "+tagHex)
 			return
@@ -370,9 +370,9 @@ func (h *TransactionHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Reconstrói o estado do classificador em background de forma assíncrona
-	go func(fID bson.ObjectID) {
+	go func(fID *uuid.UUID) {
 		_, _ = classifier.RebuildStateForFamily(context.Background(), fID, h.tagRepo, h.txRepo, h.stateRepo)
-	}(tx.FamilyID)
+	}(&tx.FamilyID)
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -380,41 +380,42 @@ func (h *TransactionHandler) Update(w http.ResponseWriter, r *http.Request) {
 // ResolveTransactionForFamily valida o ID da rota, valida a sessão (claims),
 // busca a transação no banco e garante o isolamento multi-tenant (RLS) da família.
 // Retorna a transação e o ObjectID da família em caso de sucesso.
+// Retorna a transação e o UUID da família em caso de sucesso.
 // Se houver qualquer falha, escreve a resposta de erro apropriada no ResponseWriter
-// e retorna (nil, NilObjectID, false).
+// e retorna (nil, uuid.Nil, false).
 func ResolveTransactionForFamily(
 	w http.ResponseWriter,
 	r *http.Request,
 	txRepo *repository.TransactionRepository,
-) (*models.Transaction, bson.ObjectID, bool) {
+) (*models.Transaction, uuid.UUID, bool) {
 	claims := middleware.GetClaims(r)
 	if claims == nil {
-		response.Error(w, http.StatusUnauthorized, "E_UNAUTHORIZED", "Não autenticado")
-		return nil, bson.NilObjectID, false
+		response.Error(w, http.StatusUnauthorized, "E_UNAUTHORIZED", "Sessão expirada ou não fornecida")
+		return nil, uuid.Nil, false
 	}
 
 	txIDHex := r.PathValue("id")
-	txID, err := bson.ObjectIDFromHex(txIDHex)
+	txID, err := uuid.Parse(txIDHex)
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, "E_VALIDATION", "O ID da transação informado é inválido")
-		return nil, bson.NilObjectID, false
+		return nil, uuid.Nil, false
 	}
 
-	familyID, err := bson.ObjectIDFromHex(claims.FamilyID)
+	familyID, err := uuid.Parse(claims.FamilyID)
 	if err != nil {
 		response.Error(w, http.StatusUnauthorized, "E_INVALID_SESSION", "Família inválida no token")
-		return nil, bson.NilObjectID, false
+		return nil, uuid.Nil, false
 	}
 
 	// Busca a transação e garante o isolamento multi-tenant combinando ID e FamilyID na consulta
 	tx, err := txRepo.FindByIDAndFamily(r.Context(), txID, familyID)
 	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			response.Error(w, http.StatusNotFound, "E_NOT_FOUND", "Transação não localizada")
-			return nil, bson.NilObjectID, false
+			return nil, uuid.Nil, false
 		}
 		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha interna ao buscar transação")
-		return nil, bson.NilObjectID, false
+		return nil, uuid.Nil, false
 	}
 
 	return tx, familyID, true

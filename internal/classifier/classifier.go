@@ -4,7 +4,7 @@ import (
 	"math"
 	"strings"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
+	"github.com/google/uuid"
 
 	"github.com/willGabrielPereira/finager-backend/internal/models"
 )
@@ -146,8 +146,8 @@ func Tokenize(text string) []string {
 }
 
 // Train adiciona uma transação de treinamento ao modelo para uma tag.
-func (c *Classifier) Train(text string, tagID bson.ObjectID) {
-	class := tagID.Hex()
+func (c *Classifier) Train(text string, tagID uuid.UUID) {
+	class := tagID.String()
 	words := Tokenize(text)
 	if len(words) == 0 {
 		return
@@ -168,7 +168,7 @@ func (c *Classifier) Train(text string, tagID bson.ObjectID) {
 }
 
 // Classify analisa o texto e retorna a tag mais provável (se houver correspondência estatística confiável).
-func (c *Classifier) Classify(text string) []bson.ObjectID {
+func (c *Classifier) Classify(text string) []uuid.UUID {
 	words := Tokenize(text)
 	if len(words) == 0 || c.TotalDocs == 0 || len(c.ClassDocs) == 0 {
 		return nil
@@ -217,16 +217,16 @@ func (c *Classifier) Classify(text string) []bson.ObjectID {
 		return nil
 	}
 
-	id, err := bson.ObjectIDFromHex(bestClass)
+	id, err := uuid.Parse(bestClass)
 	if err != nil {
 		return nil
 	}
 
-	return []bson.ObjectID{id}
+	return []uuid.UUID{id}
 }
 
 // ExportState compila e retorna o estado estatístico do classificador.
-func (c *Classifier) ExportState(familyID bson.ObjectID) *models.ClassifierState {
+func (c *Classifier) ExportState(familyID *uuid.UUID) *models.ClassifierState {
 	vocab := make([]string, 0, len(c.Vocabulary))
 	for w := range c.Vocabulary {
 		vocab = append(vocab, w)

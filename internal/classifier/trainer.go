@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
+	"github.com/google/uuid"
 
 	"github.com/willGabrielPereira/finager-backend/internal/models"
 	"github.com/willGabrielPereira/finager-backend/internal/repository"
@@ -15,7 +15,7 @@ import (
 // e mantendo estritamente apenas tags globais de sistema (anti-poisoning e RLS isolation).
 func TrainForFamily(
 	ctx context.Context,
-	familyID bson.ObjectID,
+	familyID *uuid.UUID,
 	tagRepo *repository.TagRepository,
 	txRepo *repository.TransactionRepository,
 ) (*Classifier, error) {
@@ -24,7 +24,7 @@ func TrainForFamily(
 	var tags []*models.Tag
 	var err error
 
-	isGlobalTraining := familyID == bson.NilObjectID
+	isGlobalTraining := familyID == nil
 
 	// 1. Carrega as tags visíveis dependendo do escopo (Global ou Familiar)
 	if isGlobalTraining {
@@ -32,15 +32,15 @@ func TrainForFamily(
 		tags, err = tagRepo.FindSystemTags(ctx)
 	} else {
 		// IA Local: Carrega todas as tags visíveis da família
-		tags, err = tagRepo.FindAllVisible(ctx, familyID)
+		tags, err = tagRepo.FindAllVisible(ctx, *familyID)
 	}
 	if err != nil {
 		return nil, err
 	}
 
 	// Mapeia Nome da Tag -> ObjectID
-	tagMap := make(map[string]bson.ObjectID)
-	allowedTagIDs := make(map[bson.ObjectID]struct{})
+	tagMap := make(map[string]uuid.UUID)
+	allowedTagIDs := make(map[uuid.UUID]struct{})
 
 	for _, t := range tags {
 		tagMap[strings.ToLower(t.Name)] = t.ID
@@ -82,7 +82,7 @@ func TrainForFamily(
 // Se for uma família nova (Day 0), herda e clona o Estado Global compilado coletivamente.
 func GetOrBuildForFamily(
 	ctx context.Context,
-	familyID bson.ObjectID,
+	familyID *uuid.UUID,
 	tagRepo *repository.TagRepository,
 	txRepo *repository.TransactionRepository,
 	stateRepo *repository.ClassifierStateRepository,
@@ -95,11 +95,11 @@ func GetOrBuildForFamily(
 	}
 
 	// 2. Cache miss da família: Se for Day 0, tenta herdar o Estado Global coletivo
-	if familyID != bson.NilObjectID {
-		globalState, err := stateRepo.FindByFamilyID(ctx, bson.NilObjectID)
+	if familyID != nil {
+		globalState, err := stateRepo.FindByFamilyID(ctx, nil)
 		if err == nil && globalState != nil {
 			// Clona o Estado Global como o ponto de partida inteligente (Day 0) da nova família
-			globalState.ID = bson.NilObjectID // Garante a criação de um novo registro
+			globalState.ID = uuid.Nil // Garante a criação de um novo registro
 			globalState.FamilyID = familyID
 			_ = stateRepo.UpsertState(ctx, globalState)
 
@@ -108,9 +108,9 @@ func GetOrBuildForFamily(
 	}
 
 	// 3. Se nem o estado global existir, reconstrói o estado global em segundo plano
-	if familyID != bson.NilObjectID {
+	if familyID != nil {
 		go func() {
-			_, _ = RebuildStateForFamily(context.Background(), bson.NilObjectID, tagRepo, txRepo, stateRepo)
+			_, _ = RebuildStateForFamily(context.Background(), nil, tagRepo, txRepo, stateRepo)
 		}()
 	}
 
@@ -122,7 +122,7 @@ func GetOrBuildForFamily(
 // compila os contadores estatísticos e salva na collection classifier_states do MongoDB.
 func RebuildStateForFamily(
 	ctx context.Context,
-	familyID bson.ObjectID,
+	familyID *uuid.UUID,
 	tagRepo *repository.TagRepository,
 	txRepo *repository.TransactionRepository,
 	stateRepo *repository.ClassifierStateRepository,
@@ -143,9 +143,9 @@ func RebuildStateForFamily(
 
 	// Se acabamos de atualizar o classificador de uma família local, disparamos de forma assíncrona
 	// a reconstrução do Cérebro Global para incorporar os novos padrões aprendidos de forma coletiva!
-	if familyID != bson.NilObjectID {
+	if familyID != nil {
 		go func() {
-			_, _ = RebuildStateForFamily(context.Background(), bson.NilObjectID, tagRepo, txRepo, stateRepo)
+			_, _ = RebuildStateForFamily(context.Background(), nil, tagRepo, txRepo, stateRepo)
 		}()
 	}
 

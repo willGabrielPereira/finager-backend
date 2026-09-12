@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/willGabrielPereira/finager-backend/internal/models"
@@ -132,7 +132,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 
 	family := &models.Family{
 		Name:      fname,
-		MemberIDs: []bson.ObjectID{},
+		MemberIDs: []uuid.UUID{},
 	}
 	if err := h.familyRepo.Create(r.Context(), family); err != nil {
 		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha ao alocar base tenant da sua Familia")
@@ -191,7 +191,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	// user enumeration — an attacker should never know which one failed.
 	user, err := h.userRepo.FindByLogin(r.Context(), req.Login)
 	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			w.WriteHeader(http.StatusUnauthorized)
 			_ = json.NewEncoder(w).Encode(errorResponse{Error: "invalid credentials"})
 			return
@@ -356,7 +356,7 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := bson.ObjectIDFromHex(claims.UserID)
+	userID, err := uuid.Parse(claims.UserID)
 	if err != nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		_ = json.NewEncoder(w).Encode(errorResponse{Error: "invalid token claims"})
@@ -411,7 +411,7 @@ func (h *Handler) issueTokenPair(r *http.Request, user *models.User) (loginRespo
 	}
 
 	rt := &models.RefreshToken{
-		ID:        bson.NewObjectID(),
+		ID:        uuid.New(),
 		UserID:    user.ID,
 		TokenHash: refreshHash,
 		ExpiresAt: time.Now().Add(h.refreshExpiresIn),

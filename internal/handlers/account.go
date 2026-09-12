@@ -5,8 +5,8 @@ import (
 	"errors"
 	"net/http"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/willGabrielPereira/finager-backend/internal/middleware"
 	"github.com/willGabrielPereira/finager-backend/internal/models"
@@ -48,8 +48,8 @@ func (h *AccountHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	familyID, _ := bson.ObjectIDFromHex(claims.FamilyID)
-	userID, _ := bson.ObjectIDFromHex(claims.UserID)
+	familyID, _ := uuid.Parse(claims.FamilyID)
+	userID, _ := uuid.Parse(claims.UserID)
 
 	accounts, err := h.accRepo.FindVisibleAccounts(r.Context(), familyID, userID)
 	if err != nil {
@@ -82,15 +82,15 @@ func (h *AccountHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	familyID, _ := bson.ObjectIDFromHex(claims.FamilyID)
-	userID, _ := bson.ObjectIDFromHex(claims.UserID)
+	familyID, _ := uuid.Parse(claims.FamilyID)
+	userID, _ := uuid.Parse(claims.UserID)
 
 	// Converte array de String pro padrao DB
-	var dbAllowedUsers []bson.ObjectID
+	var dbAllowedUsers []uuid.UUID
 	if req.AllowedUsers != nil {
 		// Validamos na raça se esses IDs existem ou são valídos
 		for _, rawHash := range req.AllowedUsers {
-			hash, err := bson.ObjectIDFromHex(rawHash)
+			hash, err := uuid.Parse(rawHash)
 			if err != nil {
 				response.Validations(w, response.ValidationError{Field: "allowed_users", Rule: "objectid", Message: "Formato corrompido de id na Array."})
 				return
@@ -98,7 +98,7 @@ func (h *AccountHandler) Create(w http.ResponseWriter, r *http.Request) {
 			dbAllowedUsers = append(dbAllowedUsers, hash)
 		}
 	} else {
-		dbAllowedUsers = []bson.ObjectID{} 
+		dbAllowedUsers = []uuid.UUID{}
 	}
 
 	account := &models.Account{
@@ -127,11 +127,11 @@ func (h *AccountHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	familyID, _ := bson.ObjectIDFromHex(claims.FamilyID)
-	userID, _ := bson.ObjectIDFromHex(claims.UserID)
+	familyID, _ := uuid.Parse(claims.FamilyID)
+	userID, _ := uuid.Parse(claims.UserID)
 	
 	accIDHex := r.PathValue("id")
-	accID, err := bson.ObjectIDFromHex(accIDHex)
+	accID, err := uuid.Parse(accIDHex)
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, "E_VALIDATION", "O ID da conta informado via URL é inoperável")
 		return
@@ -139,7 +139,7 @@ func (h *AccountHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	acc, err := h.accRepo.FindByID(r.Context(), accID)
 	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			response.Error(w, http.StatusNotFound, "E_NOT_FOUND", "A conta solicitada para edição não foi confirmada no disco")
 			return
 		}
@@ -180,28 +180,31 @@ func (h *AccountHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updates := bson.M{}
+	updated := false
 	if req.Name != "" {
-		updates["name"] = req.Name
+		acc.Name = req.Name
+		updated = true
 	}
 	if req.Institution != "" {
-		updates["institution"] = req.Institution
+		acc.Institution = req.Institution
+		updated = true
 	}
 	if req.AllowedUsers != nil { // Slice foi informada? Significa que querem trocar as regras de privacidade
-		var parsedReqAllowed []bson.ObjectID
+		var parsedReqAllowed []uuid.UUID
 		for _, rawHash := range req.AllowedUsers {
-			hash, err := bson.ObjectIDFromHex(rawHash)
+			hash, err := uuid.Parse(rawHash)
 			if err != nil {
 				response.Validations(w, response.ValidationError{Field: "allowed_users", Rule: "objectid", Message: "Um dos IDs de acessibilidade da conta está ilegível ou quebrado"})
 				return
 			}
 			parsedReqAllowed = append(parsedReqAllowed, hash)
 		}
-		updates["allowed_users"] = parsedReqAllowed
+		acc.AllowedUsers = parsedReqAllowed
+		updated = true
 	}
 
-	if len(updates) > 0 {
-		if err := h.accRepo.Update(r.Context(), accID, updates); err != nil {
+	if updated {
+		if err := h.accRepo.Update(r.Context(), acc); err != nil {
 			response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Houve uma falha ao modificar a Conta Bancária no BD")
 			return
 		}
@@ -220,11 +223,11 @@ func (h *AccountHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	familyID, _ := bson.ObjectIDFromHex(claims.FamilyID)
-	userID, _ := bson.ObjectIDFromHex(claims.UserID)
+	familyID, _ := uuid.Parse(claims.FamilyID)
+	userID, _ := uuid.Parse(claims.UserID)
 	
 	accIDHex := r.PathValue("id")
-	accID, err := bson.ObjectIDFromHex(accIDHex)
+	accID, err := uuid.Parse(accIDHex)
 	if err != nil {
 		response.Error(w, http.StatusBadRequest, "E_VALIDATION", "O ID da conta informado via URL é inoperável")
 		return
@@ -232,7 +235,7 @@ func (h *AccountHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	acc, err := h.accRepo.FindByID(r.Context(), accID)
 	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			response.Error(w, http.StatusNotFound, "E_NOT_FOUND", "A conta solicitada não existe.")
 			return
 		}
@@ -251,7 +254,7 @@ func (h *AccountHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.accRepo.Delete(r.Context(), accID); err != nil {
+	if err := h.accRepo.Delete(r.Context(), accID, familyID); err != nil {
 		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha de execução")
 		return
 	}

@@ -3,18 +3,18 @@ package models
 import (
 	"time"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
+	"github.com/google/uuid"
 )
 
 // ClassifierState representa o estado serializado dos pesos e contadores estatísticos
 // do classificador Naive Bayes para uma família específica.
 type ClassifierState struct {
-	ID              bson.ObjectID             `bson:"_id,omitempty"       json:"id,omitempty"`
-	FamilyID        bson.ObjectID             `bson:"family_id"           json:"family_id"`
-	TotalDocs       int                       `bson:"total_docs"          json:"total_docs"`
-	ClassDocs       map[string]int            `bson:"class_docs"          json:"class_docs"`           // key é o Hex ObjectID da Tag
-	ClassWordCounts map[string]map[string]int `bson:"class_word_counts"   json:"class_word_counts"`     // key é o Hex ObjectID da Tag
-	ClassTotalWords map[string]int            `bson:"class_total_words"   json:"class_total_words"`     // key é o Hex ObjectID da Tag
-	Vocabulary      []string                  `bson:"vocabulary"          json:"vocabulary"`
-	UpdatedAt       time.Time                 `bson:"updated_at"          json:"updated_at"`
+	ID              uuid.UUID                   `json:"id,omitempty"`
+	FamilyID        *uuid.UUID                  `json:"family_id"`
+	TotalDocs       int                         `json:"total_docs"`
+	ClassDocs       map[string]int              `json:"class_docs"`           // key é o Hex ObjectID da Tag
+	ClassWordCounts map[string]map[string]int   `json:"class_word_counts"`     // key é o Hex ObjectID da Tag
+	ClassTotalWords map[string]int              `json:"class_total_words"`     // key é o Hex ObjectID da Tag
+	Vocabulary      []string                    `json:"vocabulary"`
+	UpdatedAt       time.Time                   `json:"updated_at"`
 }

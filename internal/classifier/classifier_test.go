@@ -3,7 +3,7 @@ package classifier_test
 import (
 	"testing"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
+	"github.com/google/uuid"
 
 	"github.com/willGabrielPereira/finager-backend/internal/classifier"
 )
@@ -44,9 +44,9 @@ func TestTokenize(t *testing.T) {
 func TestClassifier(t *testing.T) {
 	c := classifier.New()
 
-	idAlimentacao := bson.NewObjectID()
-	idTransporte := bson.NewObjectID()
-	idSaude := bson.NewObjectID()
+	idAlimentacao := uuid.New()
+	idTransporte := uuid.New()
+	idSaude := uuid.New()
 
 	// Treinamento básico
 	c.Train("ifood restaurante lanche hamburgueria", idAlimentacao)
@@ -57,20 +57,20 @@ func TestClassifier(t *testing.T) {
 
 	tests := []struct {
 		input    string
-		expected bson.ObjectID
+		expected uuid.UUID
 		hasMatch bool
 	}{
 		{"IFOOD ENTREGA DE LANCHE", idAlimentacao, true},
 		{"UBER CORRIDA PARA TRABALHO", idTransporte, true},
 		{"COMPRA NA FARMACIA DROGASIL", idSaude, true},
-		{"QUALQUER COISA ALEATORIA", bson.NilObjectID, false}, // Não deve coincidir de forma confiável
+		{"QUALQUER COISA ALEATORIA", uuid.Nil, false}, // Não deve coincidir de forma confiável
 	}
 
 	for _, tt := range tests {
 		got := c.Classify(tt.input)
 		if !tt.hasMatch {
 			if len(got) > 0 {
-				t.Errorf("Classify(%q) expected no match, got %v", tt.input, got[0].Hex())
+				t.Errorf("Classify(%q) expected no match, got %v", tt.input, got[0].String())
 			}
 			continue
 		}
@@ -81,7 +81,7 @@ func TestClassifier(t *testing.T) {
 		}
 
 		if got[0] != tt.expected {
-			t.Errorf("Classify(%q) = %v, want %v", tt.input, got[0].Hex(), tt.expected.Hex())
+			t.Errorf("Classify(%q) = %v, want %v", tt.input, got[0].String(), tt.expected.String())
 		}
 	}
 }

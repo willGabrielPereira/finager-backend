@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
-	"go.mongodb.org/mongo-driver/v2/bson"
+	"github.com/google/uuid"
 
 	"github.com/willGabrielPereira/finager-backend/internal/database"
 	"github.com/willGabrielPereira/finager-backend/internal/repository"
@@ -28,8 +28,7 @@ func main() {
 		log.Println("No .env file, reading from environment variables")
 	}
 
-	mongoURI := getEnv("MONGO_URI", "mongodb://localhost:27017")
-	mongoDB := getEnv("MONGO_DB", "finager")
+	dbDsn := getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/finager?sslmode=disable")
 
 	user1Login := requireEnv("USER1_LOGIN")
 	user1Password := requireEnv("USER1_PASSWORD")
@@ -37,32 +36,31 @@ func main() {
 	user2Password := requireEnv("USER2_PASSWORD")
 	familyName := getEnv("SEED_FAMILY_NAME", "Família Principal")
 
-	// ── Database ──────────────────────────────────────────────────────────────
-	db, err := database.Connect(mongoURI, mongoDB)
+	db, err := database.Connect(dbDsn)
 	if err != nil {
-		log.Fatalf("Failed to connect to MongoDB: %v", err)
+		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
 	}
 	defer db.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	repos := repository.New(db.DB)
+	repos := repository.New(db.Pool)
 
 	if err := repos.EnsureIndexes(ctx); err != nil {
 		log.Fatalf("EnsureIndexes: %v", err)
 	}
 
 	// ── Família ───────────────────────────────────────────────────────────────
-	family := ensureFamily(ctx, db.DB, familyName)
-	log.Printf("✓ Family      : %q (id: %s)", family.Name, family.ID.Hex())
+	family := ensureFamily(ctx, repos.Families, familyName)
+	log.Printf("✓ Family      : %q (id: %s)", family.Name, family.ID.String())
 
 	// ── Usuários ──────────────────────────────────────────────────────────────
 	user1 := ensureUser(ctx, repos.Users, user1Login, user1Password, family.ID)
-	log.Printf("✓ User 1      : %q (id: %s)", user1.Login, user1.ID.Hex())
+	log.Printf("✓ User 1      : %q (id: %s)", user1.Login, user1.ID.String())
 
 	user2 := ensureUser(ctx, repos.Users, user2Login, user2Password, family.ID)
-	log.Printf("✓ User 2      : %q (id: %s)", user2.Login, user2.ID.Hex())
+	log.Printf("✓ User 2      : %q (id: %s)", user2.Login, user2.ID.String())
 
 	if err := repos.Families.AddMember(ctx, family.ID, user1.ID); err != nil {
 		log.Fatalf("AddMember user1: %v", err)
@@ -79,10 +77,10 @@ func main() {
 
 	// ── Contas bancárias ──────────────────────────────────────────────────────
 	sharedAcc := ensureAccount(ctx, repos.Accounts, "Conta Conjunta", "Nubank", family.ID, user1.ID, nil)
-	log.Printf("✓ Shared Acc  : %q (id: %s)", sharedAcc.Name, sharedAcc.ID.Hex())
+	log.Printf("✓ Shared Acc  : %q (id: %s)", sharedAcc.Name, sharedAcc.ID.String())
 
-	privAcc := ensureAccount(ctx, repos.Accounts, "Conta Privada "+user1.Login, "Itaú", family.ID, user1.ID, []bson.ObjectID{user1.ID})
-	log.Printf("✓ Private Acc : %q (id: %s)", privAcc.Name, privAcc.ID.Hex())
+	privAcc := ensureAccount(ctx, repos.Accounts, "Conta Privada "+user1.Login, "Itaú", family.ID, user1.ID, []uuid.UUID{user1.ID})
+	log.Printf("✓ Private Acc : %q (id: %s)", privAcc.Name, privAcc.ID.String())
 
 	log.Println("✓ Seed completed successfully.")
 }

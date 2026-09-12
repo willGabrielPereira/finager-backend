@@ -13,8 +13,7 @@ import (
 
 // Config holds all application configuration values loaded from the environment.
 type Config struct {
-	MongoURI               string
-	MongoDB                string
+	DatabaseDSN            string
 	Port                   string
 	JWTSecret              string
 	JWTExpiresHours        int
@@ -32,8 +31,7 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		MongoURI:               getEnv("MONGO_URI", "mongodb://localhost:27017"),
-		MongoDB:                getEnv("MONGO_DB", "finager"),
+		DatabaseDSN:            getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/finager?sslmode=disable"),
 		Port:                   getEnv("PORT", "8080"),
 		JWTSecret:              getEnv("JWT_SECRET", ""),
 		JWTExpiresHours:        getEnvInt("JWT_EXPIRATION_HOURS", 1),

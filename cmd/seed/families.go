@@ -3,31 +3,22 @@ package main
 import (
 	"context"
 	"log"
-	"time"
-
-	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/willGabrielPereira/finager-backend/internal/models"
+	"github.com/willGabrielPereira/finager-backend/internal/repository"
 )
 
-func ensureFamily(ctx context.Context, db *mongo.Database, name string) *models.Family {
-	col := db.Collection("families")
-	var family models.Family
-	err := col.FindOne(ctx, bson.D{{Key: "name", Value: name}}).Decode(&family)
+func ensureFamily(ctx context.Context, repo *repository.FamilyRepository, name string) *models.Family {
+	family, err := repo.FindByName(ctx, name)
 	if err == nil {
-		return &family
+		return family
 	}
 
-	family = models.Family{
-		ID:        bson.NewObjectID(),
-		Name:      name,
-		MemberIDs: []bson.ObjectID{},
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+	newFamily := &models.Family{
+		Name: name,
 	}
-	if _, err := col.InsertOne(ctx, family); err != nil {
-		log.Fatalf("InsertOne family: %v", err)
+	if err := repo.Create(ctx, newFamily); err != nil {
+		log.Fatalf("Create family: %v", err)
 	}
-	return &family
+	return newFamily
 }

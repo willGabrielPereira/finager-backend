@@ -4,72 +4,43 @@ import (
 	"context"
 	"time"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const blocklistCollection = "revoked_tokens"
-
-// blocklistedToken is the document stored in the revoked_tokens collection.
-// The raw access token is NEVER stored — only its SHA-256 hash.
-type blocklistedToken struct {
-	ID        bson.ObjectID `bson:"_id,omitempty"`
-	TokenHash string        `bson:"token_hash"`
-	ExpiresAt time.Time     `bson:"expires_at"` // TTL index — auto-deleted by MongoDB
-}
-
-// BlocklistRepository manages the revocation blocklist for access tokens.
-// On logout, the access token's hash is inserted here. The Authenticate
-// middleware checks this collection on every protected request.
 type BlocklistRepository struct {
-	col *mongo.Collection
+	pool *pgxpool.Pool
 }
 
-// NewBlocklistRepository creates a BlocklistRepository.
-func NewBlocklistRepository(db *mongo.Database) *BlocklistRepository {
-	return &BlocklistRepository{col: db.Collection(blocklistCollection)}
+func NewBlocklistRepository(pool *pgxpool.Pool) *BlocklistRepository {
+	return &BlocklistRepository{pool: pool}
 }
 
-// EnsureIndexes creates TTL + unique hash indexes (idempotent).
 func (r *BlocklistRepository) EnsureIndexes(ctx context.Context) error {
-	_, err := r.col.Indexes().CreateMany(ctx, []mongo.IndexModel{
-		{
-			Keys:    bson.D{{Key: "token_hash", Value: 1}},
-			Options: options.Index().SetUnique(true),
-		},
-		{
-			// MongoDB deletes the document automatically when expires_at passes.
-			Keys:    bson.D{{Key: "expires_at", Value: 1}},
-			Options: options.Index().SetExpireAfterSeconds(0),
-		},
-	})
+	return nil
+}
+
+func (r *BlocklistRepository) Add(ctx context.Context, hash string, expiresAt time.Time) error {
+	query := `INSERT INTO blocklist (token_hash, expires_at) VALUES ($1, $2) ON CONFLICT DO NOTHING`
+	_, err := r.pool.Exec(ctx, query, hash, expiresAt)
 	return err
 }
 
-// Add inserts a token hash into the blocklist. The document will be
-// automatically removed by MongoDB when expiresAt is reached.
-func (r *BlocklistRepository) Add(ctx context.Context, tokenHash string, expiresAt time.Time) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	doc := blocklistedToken{
-		ID:        bson.NewObjectID(),
-		TokenHash: tokenHash,
-		ExpiresAt: expiresAt,
+func (r *BlocklistRepository) Exists(ctx context.Context, hash string) (bool, error) {
+	query := `SELECT 1 FROM blocklist WHERE token_hash = $1`
+	var i int
+	err := r.pool.QueryRow(ctx, query, hash).Scan(&i)
+	if err == pgx.ErrNoRows {
+		return false, nil
 	}
-	_, err := r.col.InsertOne(ctx, doc)
-	return err
-}
-
-// IsBlocked reports whether the given token hash is present in the blocklist.
-func (r *BlocklistRepository) IsBlocked(ctx context.Context, tokenHash string) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	count, err := r.col.CountDocuments(ctx, bson.D{{Key: "token_hash", Value: tokenHash}})
 	if err != nil {
 		return false, err
 	}
-	return count > 0, nil
+	return true, nil
+}
+
+func (r *BlocklistRepository) DeleteExpired(ctx context.Context) error {
+	query := `DELETE FROM blocklist WHERE expires_at < now()`
+	_, err := r.pool.Exec(ctx, query)
+	return err
 }

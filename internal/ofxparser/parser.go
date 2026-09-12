@@ -6,14 +6,14 @@ import (
 	"strconv"
 	"time"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
+	"github.com/google/uuid"
 	"github.com/aclindsa/ofxgo"
 	"github.com/willGabrielPereira/finager-backend/internal/models"
 )
 
 // Parse reads an OFX file from the given reader and returns a slice of
 // Transaction models ready to be persisted.
-func Parse(r io.Reader) ([]models.Transaction, error) {
+func Parse(r io.Reader, accountID, familyID uuid.UUID, createdBy uuid.UUID) ([]models.Transaction, error) {
 	resp, err := ofxgo.ParseResponse(r)
 	if err != nil {
 		return nil, fmt.Errorf("ofxparser: failed to parse OFX response: %w", err)
@@ -40,7 +40,7 @@ func Parse(r io.Reader) ([]models.Transaction, error) {
 				Amount:     amount,
 				Name:       string(rawTx.Name),
 				Memo:       string(rawTx.Memo),
-				Tags:       []bson.ObjectID{},
+				Tags:       []uuid.UUID{},
 				ImportedAt: time.Now().UTC(),
 			}
 
