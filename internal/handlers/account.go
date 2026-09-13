@@ -27,6 +27,7 @@ func NewAccountHandler(accRepo *repository.AccountRepository) *AccountHandler {
 type createAccountRequest struct {
 	Name         string   `json:"name"          validate:"required,min=2"`
 	Institution  string   `json:"institution"   validate:"required"`
+	Type         string   `json:"type"          validate:"omitempty"` // CHECKING, CREDIT_CARD, INVESTMENT, CASH, OTHER
 	AllowedUsers []string `json:"allowed_users" validate:"omitempty"`
 }
 
@@ -34,6 +35,7 @@ type createAccountRequest struct {
 type updateAccountRequest struct {
 	Name         string   `json:"name"          validate:"omitempty,min=2"`
 	Institution  string   `json:"institution"   validate:"omitempty"`
+	Type         string   `json:"type"          validate:"omitempty"`
 	AllowedUsers []string `json:"allowed_users" validate:"omitempty"`
 }
 
@@ -101,9 +103,15 @@ func (h *AccountHandler) Create(w http.ResponseWriter, r *http.Request) {
 		dbAllowedUsers = []uuid.UUID{}
 	}
 
+	accType := req.Type
+	if accType == "" {
+		accType = "CHECKING"
+	}
+
 	account := &models.Account{
 		Name:         req.Name,
 		Institution:  req.Institution,
+		Type:         accType,
 		FamilyID:     familyID,
 		CreatedBy:    userID,
 		AllowedUsers: dbAllowedUsers,
@@ -187,6 +195,10 @@ func (h *AccountHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Institution != "" {
 		acc.Institution = req.Institution
+		updated = true
+	}
+	if req.Type != "" {
+		acc.Type = req.Type
 		updated = true
 	}
 	if req.AllowedUsers != nil { // Slice foi informada? Significa que querem trocar as regras de privacidade

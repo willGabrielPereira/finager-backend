@@ -15,6 +15,7 @@ import (
 type ProfileResponse struct {
 	UserID     string    `json:"user_id"`
 	Login      string    `json:"login"`
+	Email      string    `json:"email"`
 	FamilyID   string    `json:"family_id"`
 	FamilyName string    `json:"family_name"`
 	CreatedAt  time.Time `json:"created_at"`
@@ -22,6 +23,7 @@ type ProfileResponse struct {
 
 type updateProfileRequest struct {
 	Login      string `json:"login"`
+	Email      string `json:"email"`
 	FamilyName string `json:"family_name"`
 }
 
@@ -70,6 +72,7 @@ func (h *ProfileHandler) Get(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, http.StatusOK, ProfileResponse{
 		UserID:     user.ID.String(),
 		Login:      user.Login,
+		Email:      user.Email,
 		FamilyID:   user.FamilyID.String(),
 		FamilyName: familyName,
 		CreatedAt:  user.CreatedAt,
@@ -123,6 +126,24 @@ func (h *ProfileHandler) Update(w http.ResponseWriter, r *http.Request) {
 		user.Login = newLogin
 	}
 
+	newEmail := strings.ToLower(strings.TrimSpace(req.Email))
+	if newEmail != "" && newEmail != strings.ToLower(user.Email) {
+		if !strings.Contains(newEmail, "@") || !strings.Contains(newEmail, ".") {
+			response.Error(w, http.StatusUnprocessableEntity, "E_VALIDATION", "Por favor informe um e-mail válido")
+			return
+		}
+		existing, _ := h.userRepo.FindByEmail(r.Context(), newEmail)
+		if existing != nil && existing.ID != user.ID {
+			response.Error(w, http.StatusConflict, "E_CONFLICT", "Este e-mail já está em uso por outro usuário")
+			return
+		}
+		if err := h.userRepo.UpdateEmail(r.Context(), user.ID, newEmail); err != nil {
+			response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha ao atualizar e-mail")
+			return
+		}
+		user.Email = newEmail
+	}
+
 	newFamilyName := strings.TrimSpace(req.FamilyName)
 	if newFamilyName != "" {
 		if len(newFamilyName) < 2 {
@@ -142,6 +163,7 @@ func (h *ProfileHandler) Update(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, http.StatusOK, ProfileResponse{
 		UserID:     user.ID.String(),
 		Login:      user.Login,
+		Email:      user.Email,
 		FamilyID:   user.FamilyID.String(),
 		FamilyName: familyName,
 		CreatedAt:  user.CreatedAt,

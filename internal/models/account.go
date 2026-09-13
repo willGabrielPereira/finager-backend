@@ -14,6 +14,7 @@ type Account struct {
 	ID           uuid.UUID   `json:"id,omitempty"`
 	Name         string      `json:"name"` // Ex: "Nubank Conjunto" ou "Caixa-2"
 	Institution  string      `json:"institution"`
+	Type         string      `json:"type"` // CHECKING, CREDIT_CARD, INVESTMENT, CASH, OTHER
 	FamilyID     uuid.UUID   `json:"family_id"`
 	CreatedBy    uuid.UUID   `json:"created_by"`
 	AllowedUsers []uuid.UUID `json:"allowed_users"`

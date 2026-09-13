@@ -12,6 +12,7 @@ services:
       - .env
     environment:
       DATABASE_URL: postgres://postgres:postgres@db:5432/finager?sslmode=disable
+      SEED_TAGS_ONLY: "true"
     depends_on:
       db:
         condition: service_healthy

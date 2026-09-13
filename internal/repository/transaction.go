@@ -268,7 +268,9 @@ func (r *TransactionRepository) ApplyTagToSimilar(ctx context.Context, familyID 
 type ListFilter struct {
 	FamilyID          uuid.UUID
 	AllowedAccountIDs []uuid.UUID
+	AccountIDs        []uuid.UUID // Filtro de seleção múltipla de contas
 	TagID             *uuid.UUID
+	TagIDs            []uuid.UUID // Filtro de seleção múltipla de tags
 	Type              string
 	Status            string
 	DateFrom          time.Time
@@ -296,9 +298,25 @@ func (r *TransactionRepository) List(ctx context.Context, f ListFilter) (PagedRe
 	args := []interface{}{f.FamilyID}
 	argIdx := 2
 
-	if len(f.AllowedAccountIDs) > 0 {
-		var placeholders []string
+	// Determina as contas a filtrar, garantindo que o usuário só acesse contas permitidas
+	effectiveAccountIDs := f.AllowedAccountIDs
+	if len(f.AccountIDs) > 0 {
+		var filtered []uuid.UUID
+		allowedMap := make(map[uuid.UUID]bool)
 		for _, id := range f.AllowedAccountIDs {
+			allowedMap[id] = true
+		}
+		for _, id := range f.AccountIDs {
+			if allowedMap[id] {
+				filtered = append(filtered, id)
+			}
+		}
+		effectiveAccountIDs = filtered
+	}
+
+	if len(effectiveAccountIDs) > 0 {
+		var placeholders []string
+		for _, id := range effectiveAccountIDs {
 			placeholders = append(placeholders, fmt.Sprintf("$%d", argIdx))
 			args = append(args, id)
 			argIdx++
@@ -308,7 +326,15 @@ func (r *TransactionRepository) List(ctx context.Context, f ListFilter) (PagedRe
 		whereClauses = append(whereClauses, "1=0")
 	}
 
-	if f.TagID != nil {
+	if len(f.TagIDs) > 0 {
+		var tagPlaceholders []string
+		for _, tID := range f.TagIDs {
+			tagPlaceholders = append(tagPlaceholders, fmt.Sprintf("$%d", argIdx))
+			args = append(args, tID)
+			argIdx++
+		}
+		whereClauses = append(whereClauses, fmt.Sprintf("EXISTS (SELECT 1 FROM transaction_tags tt WHERE tt.transaction_id = t.id AND tt.tag_id IN (%s))", strings.Join(tagPlaceholders, ", ")))
+	} else if f.TagID != nil {
 		whereClauses = append(whereClauses, fmt.Sprintf("EXISTS (SELECT 1 FROM transaction_tags tt WHERE tt.transaction_id = t.id AND tt.tag_id = $%d)", argIdx))
 		args = append(args, *f.TagID)
 		argIdx++
@@ -321,9 +347,13 @@ func (r *TransactionRepository) List(ctx context.Context, f ListFilter) (PagedRe
 	}
 
 	if f.Status != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("t.status = $%d", argIdx))
-		args = append(args, f.Status)
-		argIdx++
+		if strings.EqualFold(f.Status, "UNTAGGED") {
+			whereClauses = append(whereClauses, "NOT EXISTS (SELECT 1 FROM transaction_tags tt WHERE tt.transaction_id = t.id)")
+		} else {
+			whereClauses = append(whereClauses, fmt.Sprintf("t.status = $%d", argIdx))
+			args = append(args, f.Status)
+			argIdx++
+		}
 	}
 
 	if f.Search != "" {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -446,10 +447,29 @@ func (h *TransactionHandler) List(w http.ResponseWriter, r *http.Request) {
 		Search:            q.Get("search"),
 	}
 
-	if v := q.Get("tag"); v != "" {
-		if tagID, err := uuid.Parse(v); err == nil {
-			filter.TagID = &tagID
+	// Parsing de filtro multi-select de contas
+	var filterAccountIDs []uuid.UUID
+	for _, accParam := range append(q["account_id"], q["accounts"]...) {
+		for _, part := range strings.Split(accParam, ",") {
+			if aID, err := uuid.Parse(strings.TrimSpace(part)); err == nil {
+				filterAccountIDs = append(filterAccountIDs, aID)
+			}
 		}
+	}
+	filter.AccountIDs = filterAccountIDs
+
+	// Parsing de filtro multi-select de tags/categorias
+	var filterTagIDs []uuid.UUID
+	for _, tagParam := range append(q["tag"], q["tags"]...) {
+		for _, part := range strings.Split(tagParam, ",") {
+			if tID, err := uuid.Parse(strings.TrimSpace(part)); err == nil {
+				filterTagIDs = append(filterTagIDs, tID)
+			}
+		}
+	}
+	filter.TagIDs = filterTagIDs
+	if len(filterTagIDs) == 1 {
+		filter.TagID = &filterTagIDs[0]
 	}
 
 	if v := q.Get("date_from"); v != "" {

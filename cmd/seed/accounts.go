@@ -22,6 +22,7 @@ func ensureAccount(ctx context.Context, repo *repository.AccountRepository, name
 	acc := &models.Account{
 		Name:         name,
 		Institution:  institution,
+		Type:         "CHECKING",
 		FamilyID:     familyID,
 		CreatedBy:    creatorID,
 		AllowedUsers: allowedUsers,

@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS families (
 CREATE TABLE IF NOT EXISTS users (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     login         TEXT        NOT NULL UNIQUE,
+    email         TEXT        UNIQUE,
     password_hash TEXT        NOT NULL,
     family_id     UUID        NOT NULL REFERENCES families(id) ON DELETE CASCADE,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -39,6 +40,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name        TEXT        NOT NULL,
     institution TEXT        NOT NULL,
+    type        TEXT        NOT NULL DEFAULT 'CHECKING', -- CHECKING, CREDIT_CARD, INVESTMENT, CASH, OTHER
     family_id   UUID        NOT NULL REFERENCES families(id) ON DELETE CASCADE,
     created_by  UUID        NOT NULL REFERENCES users(id),
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -105,6 +107,18 @@ CREATE TABLE IF NOT EXISTS blocklist (
     expires_at TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS family_invites (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    family_id    UUID        NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+    token        TEXT        NOT NULL UNIQUE,
+    target_email TEXT,
+    created_by   UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at   TIMESTAMPTZ NOT NULL,
+    used_at      TIMESTAMPTZ,
+    used_by      UUID        REFERENCES users(id) ON DELETE SET NULL
+);
+
 -- Estado serializado do classificador Naive Bayes por família
 -- Os mapas (class_docs, class_word_counts, etc.) ficam como JSONB
 CREATE TABLE IF NOT EXISTS classifier_states (
@@ -126,3 +140,5 @@ CREATE INDEX IF NOT EXISTS idx_merchant_mappings_family ON merchant_mappings(fam
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_blocklist_expires ON blocklist(expires_at);
 CREATE INDEX IF NOT EXISTS idx_tags_family ON tags(family_id);
+CREATE INDEX IF NOT EXISTS idx_family_invites_token ON family_invites(token);
+CREATE INDEX IF NOT EXISTS idx_family_invites_family ON family_invites(family_id);

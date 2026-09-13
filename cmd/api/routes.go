@@ -26,6 +26,7 @@ func registerRoutes(
 		repos.Families,
 		repos.RefreshTokens,
 		repos.Blocklist,
+		repos.Invites,
 		jwtRefreshExpiresHours,
 	)
 
@@ -39,6 +40,7 @@ func registerRoutes(
 	accHandler := handlers.NewAccountHandler(repos.Accounts)
 	aiHandler := handlers.NewAIHandler(repos.Transactions, repos.Tags, repos.ClassifierStates, repos.MerchantMappings)
 	profileHandler := handlers.NewProfileHandler(repos.Users, repos.Families)
+	familyHandler := handlers.NewFamilyHandler(repos.Families, repos.Invites, repos.Users)
 
 	// ── Públicas ──────────────────────────────────────────────────────────────
 	mux.HandleFunc("GET /health", handlers.HealthHandler)
@@ -58,6 +60,13 @@ func registerRoutes(
 	// ── Perfil do Usuário ─────────────────────────────────────────────────────
 	mux.Handle("GET /me", authMid(http.HandlerFunc(profileHandler.Get)))
 	mux.Handle("PUT /me", authMid(http.HandlerFunc(profileHandler.Update)))
+
+	// ── Família & Convites ────────────────────────────────────────────────────
+	mux.HandleFunc("GET /family/invites/validate", familyHandler.ValidateInvite)
+	mux.Handle("GET /family/members", authMid(http.HandlerFunc(familyHandler.GetMembers)))
+	mux.Handle("POST /family/invites", authMid(http.HandlerFunc(familyHandler.CreateInvite)))
+	mux.Handle("POST /family/join", authMid(http.HandlerFunc(familyHandler.Join)))
+	mux.Handle("DELETE /family/members/{id}", authMid(http.HandlerFunc(familyHandler.RemoveMember)))
 
 
 	// ── Transações ────────────────────────────────────────────────────────────
