@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -220,3 +222,45 @@ func (h *TagHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// ListFrequent retorna as tags mais utilizadas recentemente pela família (ex: últimos 30 a 60 dias)
+// @Summary      Listar Tags Frequentes
+// @Description  Retorna as tags mais utilizadas no período especificado (default 60 dias)
+// @Router       /tags/frequent [get]
+func (h *TagHandler) ListFrequent(w http.ResponseWriter, r *http.Request) {
+	claims := middleware.GetClaims(r)
+	if claims == nil {
+		response.Error(w, http.StatusUnauthorized, "E_UNAUTHORIZED", "Não autenticado")
+		return
+	}
+
+	familyID, err := uuid.Parse(claims.FamilyID)
+	if err != nil {
+		response.Error(w, http.StatusUnauthorized, "E_INVALID_SESSION", "invalid family in token")
+		return
+	}
+
+	days := 60
+	if d := r.URL.Query().Get("days"); d != "" {
+		if v, err := strconv.Atoi(d); err == nil && v > 0 {
+			days = v
+		}
+	}
+
+	limit := 8
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 {
+			limit = v
+		}
+	}
+
+	since := time.Now().AddDate(0, 0, -days)
+	tags, err := h.tagRepo.ListFrequent(r.Context(), familyID, since, limit)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha ao buscar tags frequentes")
+		return
+	}
+
+	response.JSON(w, http.StatusOK, tags)
+}
+

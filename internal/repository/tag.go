@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -163,3 +164,44 @@ func (r *TagRepository) FindSystemTags(ctx context.Context) ([]*models.Tag, erro
 	}
 	return tags, nil
 }
+
+// ListFrequent busca as tags mais utilizadas pela família a partir de uma data inicial (ex: últimos 30 a 60 dias).
+func (r *TagRepository) ListFrequent(ctx context.Context, familyID uuid.UUID, since time.Time, limit int) ([]*models.Tag, error) {
+	if limit <= 0 {
+		limit = 8
+	}
+
+	query := `
+		SELECT t.id, t.name, t.color, t.icon, t.family_id, t.is_system, t.created_at, COUNT(tt.transaction_id) as usage_count
+		FROM tags t
+		INNER JOIN transaction_tags tt ON t.id = tt.tag_id
+		INNER JOIN transactions tr ON tt.transaction_id = tr.id
+		WHERE tr.family_id = $1 AND tr.date_posted >= $2
+		GROUP BY t.id
+		ORDER BY usage_count DESC, t.name ASC
+		LIMIT $3
+	`
+
+	rows, err := r.pool.Query(ctx, query, familyID, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tags []*models.Tag
+	for rows.Next() {
+		var tag models.Tag
+		var usageCount int64
+		if err := rows.Scan(&tag.ID, &tag.Name, &tag.Color, &tag.Icon, &tag.FamilyID, &tag.IsSystem, &tag.CreatedAt, &usageCount); err != nil {
+			return nil, err
+		}
+		tags = append(tags, &tag)
+	}
+
+	if tags == nil {
+		tags = []*models.Tag{}
+	}
+
+	return tags, nil
+}
+

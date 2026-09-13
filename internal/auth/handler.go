@@ -25,9 +25,11 @@ type loginRequest struct {
 }
 
 type registerRequest struct {
-	Login      string `json:"login"       validate:"required,min=4"`
-	Password   string `json:"password"    validate:"required,min=8"`
-	FamilyName string `json:"family_name" validate:"omitempty,min=2"`
+	Login       string `json:"login"        validate:"required,min=4,max=32"`
+	Email       string `json:"email"        validate:"required,email"`
+	Password    string `json:"password"     validate:"required,min=8,max=72"`
+	FamilyName  string `json:"family_name"  validate:"omitempty,min=2"`
+	InviteToken string `json:"invite_token" validate:"omitempty"`
 }
 
 // loginResponse contains both tokens returned on successful authentication.
@@ -63,6 +65,7 @@ type Handler struct {
 	familyRepo       *repository.FamilyRepository
 	refreshRepo      *repository.RefreshTokenRepository
 	blocklistRepo    *repository.BlocklistRepository
+	inviteRepo       *repository.FamilyInviteRepository
 	refreshExpiresIn time.Duration
 }
 
@@ -73,6 +76,7 @@ func NewHandler(
 	familyRepo *repository.FamilyRepository,
 	refreshRepo *repository.RefreshTokenRepository,
 	blocklistRepo *repository.BlocklistRepository,
+	inviteRepo *repository.FamilyInviteRepository,
 	refreshExpiresHours int,
 ) *Handler {
 	return &Handler{
@@ -81,6 +85,7 @@ func NewHandler(
 		familyRepo:       familyRepo,
 		refreshRepo:      refreshRepo,
 		blocklistRepo:    blocklistRepo,
+		inviteRepo:       inviteRepo,
 		refreshExpiresIn: time.Duration(refreshExpiresHours) * time.Hour,
 	}
 }
@@ -89,7 +94,7 @@ func NewHandler(
 
 // Register handles POST /auth/register
 // @Summary      Cadastro de Usuário
-// @Description  Cadastra um novo usuário e automaticamente instancializa uma Familia root vinculada a ele.
+// @Description  Cadastra um novo usuário e automaticamente instancializa uma Familia root vinculada a ele, ou vincula à família do convite.
 // @Tags         auth
 // @Produce      json
 // @Param        body body registerRequest true "Dados de cadastro"
@@ -104,59 +109,107 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delega pra Engine Global extrair todas as falhas num Array VineJS
+	req.Login = strings.TrimSpace(req.Login)
+	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
+
+	// Valida campos
 	if errs := validator.Struct(req); errs != nil {
 		response.Validations(w, errs...)
 		return
 	}
 
-	// 1. Checa unicidade
-	exists, _ := h.userRepo.FindByLogin(r.Context(), req.Login)
-	if exists != nil {
-		response.Validations(w, response.ValidationError{Field: "login", Rule: "unique", Message: "Este login já está sendo utilizado"})
+	// 1. Checa unicidade do login
+	existsLogin, _ := h.userRepo.FindByLogin(r.Context(), req.Login)
+	if existsLogin != nil {
+		response.Validations(w, response.ValidationError{Field: "login", Rule: "unique", Message: "Este nome de usuário já está sendo utilizado"})
 		return
 	}
 
-	// 2. Hash Password
+	// 2. Checa unicidade do e-mail
+	existsEmail, _ := h.userRepo.FindByEmail(r.Context(), req.Email)
+	if existsEmail != nil {
+		response.Validations(w, response.ValidationError{Field: "email", Rule: "unique", Message: "Este e-mail já está cadastrado em outra conta"})
+		return
+	}
+
+	// 3. Verifica convite se fornecido
+	var targetFamilyID uuid.UUID
+	var invite *models.FamilyInvite
+	if req.InviteToken != "" {
+		inv, err := h.inviteRepo.FindByToken(r.Context(), req.InviteToken)
+		if err != nil || inv == nil {
+			response.Validations(w, response.ValidationError{Field: "invite_token", Rule: "invalid", Message: "Código de convite não encontrado ou inválido"})
+			return
+		}
+		if inv.UsedAt != nil {
+			response.Validations(w, response.ValidationError{Field: "invite_token", Rule: "used", Message: "Este convite já foi utilizado"})
+			return
+		}
+		if inv.ExpiresAt.Before(time.Now()) {
+			response.Validations(w, response.ValidationError{Field: "invite_token", Rule: "expired", Message: "Este convite expirou"})
+			return
+		}
+		if inv.TargetEmail != nil && *inv.TargetEmail != "" && !strings.EqualFold(*inv.TargetEmail, req.Email) {
+			response.Validations(w, response.ValidationError{
+				Field:   "email",
+				Rule:    "mismatch",
+				Message: "Este convite foi emitido exclusivamente para o e-mail: " + *inv.TargetEmail,
+			})
+			return
+		}
+		invite = inv
+		targetFamilyID = inv.FamilyID
+	}
+
+	// 4. Hash Password
 	hashed, err := bcrypt.GenerateFromPassword([]byte(req.Password), 12)
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha interna ao gerar hash")
+		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha interna ao gerar hash de senha")
 		return
 	}
 
-	// 3. Cria a Familia (Injeção dinamica se nulo)
-	fname := req.FamilyName
-	if fname == "" {
-		fname = "Família de " + req.Login
+	// 5. Família: se não veio por convite, cria uma nova família
+	if invite == nil {
+		fname := req.FamilyName
+		if fname == "" {
+			fname = "Família de " + req.Login
+		}
+
+		family := &models.Family{
+			Name:      fname,
+			MemberIDs: []uuid.UUID{},
+		}
+		if err := h.familyRepo.Create(r.Context(), family); err != nil {
+			response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha ao alocar espaço familiar")
+			return
+		}
+		targetFamilyID = family.ID
 	}
 
-	family := &models.Family{
-		Name:      fname,
-		MemberIDs: []uuid.UUID{},
-	}
-	if err := h.familyRepo.Create(r.Context(), family); err != nil {
-		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha ao alocar base tenant da sua Familia")
-		return
-	}
-
-	// 4. Cria o usuário já vinculado na família recém nascida
+	// 6. Cria o usuário vinculado à família
 	user := &models.User{
 		Login:        req.Login,
+		Email:        req.Email,
 		PasswordHash: string(hashed),
-		FamilyID:     family.ID,
+		FamilyID:     targetFamilyID,
 	}
 	if err := h.userRepo.Create(r.Context(), user); err != nil {
-		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha ao alocar registro de usuário")
+		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha ao alocar registro de usuário: "+err.Error())
 		return
 	}
 
-	// E cadastra ele como membro master dela
-	_ = h.familyRepo.AddMember(r.Context(), family.ID, user.ID)
+	// 7. Cadastra ele como membro da família
+	_ = h.familyRepo.AddMember(r.Context(), targetFamilyID, user.ID)
 
-	// 5. Devolve Autenticado
+	// 8. Se usou convite, marca como utilizado
+	if invite != nil {
+		_ = h.inviteRepo.MarkAsUsed(r.Context(), invite.ID, user.ID)
+	}
+
+	// 9. Devolve Autenticado
 	resp, err := h.issueTokenPair(r, user)
 	if err != nil {
-		response.JSON(w, http.StatusCreated, map[string]string{"message": "logado criado com sucesso, mas faça login para continuar"})
+		response.JSON(w, http.StatusCreated, map[string]string{"message": "Conta criada com sucesso, por favor faça login."})
 		return
 	}
 
@@ -164,19 +217,6 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 }
 
 // Login handles POST /auth/login.
-//
-// @Summary      Login
-// @Description  Autentica com login/senha e retorna um par de tokens (access token de curta duração + refresh token)
-// @Tags         auth
-// @Accept       json
-// @Produce      json
-// @Param        body  body      loginRequest   true  "Credenciais"
-// @Success      200   {object}  loginResponse
-// @Failure      400   {object}  errorResponse
-// @Failure      401   {object}  errorResponse
-// @Failure      429   {object}  errorResponse
-// @Failure      500   {object}  errorResponse
-// @Router       /auth/login [post]
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -187,30 +227,31 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Same generic error for "user not found" and "wrong password" to prevent
-	// user enumeration — an attacker should never know which one failed.
-	user, err := h.userRepo.FindByLogin(r.Context(), req.Login)
+	req.Login = strings.TrimSpace(req.Login)
+
+	// Busca por login ou e-mail
+	user, err := h.userRepo.FindByLoginOrEmail(r.Context(), req.Login)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			w.WriteHeader(http.StatusUnauthorized)
-			_ = json.NewEncoder(w).Encode(errorResponse{Error: "invalid credentials"})
+			_ = json.NewEncoder(w).Encode(errorResponse{Error: "Credenciais inválidas"})
 			return
 		}
 		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(errorResponse{Error: "internal error"})
+		_ = json.NewEncoder(w).Encode(errorResponse{Error: "Erro interno"})
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
 		w.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(w).Encode(errorResponse{Error: "invalid credentials"})
+		_ = json.NewEncoder(w).Encode(errorResponse{Error: "Credenciais inválidas"})
 		return
 	}
 
 	resp, err := h.issueTokenPair(r, user)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(errorResponse{Error: "could not generate tokens"})
+		_ = json.NewEncoder(w).Encode(errorResponse{Error: "Não foi possível gerar tokens de autenticação"})
 		return
 	}
 

@@ -26,6 +26,7 @@ func registerRoutes(
 		repos.Families,
 		repos.RefreshTokens,
 		repos.Blocklist,
+		repos.Invites,
 		jwtRefreshExpiresHours,
 	)
 
@@ -34,10 +35,12 @@ func registerRoutes(
 	loginLimiter := middleware.NewInMemoryRateLimiter(10, time.Minute)
 	refreshLimiter := middleware.NewInMemoryRateLimiter(20, time.Minute)
 
-	txHandler := handlers.NewTransactionHandler(repos.Transactions, repos.Accounts, repos.Tags, repos.ClassifierStates)
+	txHandler := handlers.NewTransactionHandler(repos.Transactions, repos.Accounts, repos.Tags, repos.ClassifierStates, repos.MerchantMappings)
 	tagHandler := handlers.NewTagHandler(repos.Tags)
 	accHandler := handlers.NewAccountHandler(repos.Accounts)
-	aiHandler := handlers.NewAIHandler(repos.Transactions, repos.Tags, repos.ClassifierStates)
+	aiHandler := handlers.NewAIHandler(repos.Transactions, repos.Tags, repos.ClassifierStates, repos.MerchantMappings)
+	profileHandler := handlers.NewProfileHandler(repos.Users, repos.Families)
+	familyHandler := handlers.NewFamilyHandler(repos.Families, repos.Invites, repos.Users)
 
 	// ── Públicas ──────────────────────────────────────────────────────────────
 	mux.HandleFunc("GET /health", handlers.HealthHandler)
@@ -54,24 +57,39 @@ func registerRoutes(
 	mux.Handle("POST /auth/logout", authMid(http.HandlerFunc(authHandler.Logout)))
 	mux.Handle("PUT /auth/password", authMid(http.HandlerFunc(authHandler.ChangePassword)))
 
-	// ── Me ────────────────────────────────────────────────────────────────────
-	mux.Handle("GET /me", authMid(http.HandlerFunc(handlers.MeHandler)))
+	// ── Perfil do Usuário ─────────────────────────────────────────────────────
+	mux.Handle("GET /me", authMid(http.HandlerFunc(profileHandler.Get)))
+	mux.Handle("PUT /me", authMid(http.HandlerFunc(profileHandler.Update)))
+
+	// ── Família & Convites ────────────────────────────────────────────────────
+	mux.HandleFunc("GET /family/invites/validate", familyHandler.ValidateInvite)
+	mux.Handle("GET /family/members", authMid(http.HandlerFunc(familyHandler.GetMembers)))
+	mux.Handle("POST /family/invites", authMid(http.HandlerFunc(familyHandler.CreateInvite)))
+	mux.Handle("POST /family/join", authMid(http.HandlerFunc(familyHandler.Join)))
+	mux.Handle("DELETE /family/members/{id}", authMid(http.HandlerFunc(familyHandler.RemoveMember)))
+
 
 	// ── Transações ────────────────────────────────────────────────────────────
+	mux.Handle("POST /transactions", authMid(http.HandlerFunc(txHandler.Create)))
 	mux.Handle("POST /transactions/import", authMid(http.HandlerFunc(txHandler.Import)))
 	mux.Handle("GET /transactions", authMid(http.HandlerFunc(txHandler.List)))
 	mux.Handle("PUT /transactions/{id}", authMid(http.HandlerFunc(txHandler.Update)))
+	mux.Handle("DELETE /transactions/{id}", authMid(http.HandlerFunc(txHandler.Delete)))
+	mux.Handle("POST /transactions/{id}/apply-similar", authMid(http.HandlerFunc(txHandler.ApplySimilar)))
 	mux.Handle("POST /transactions/{id}/suggest-tags", authMid(http.HandlerFunc(aiHandler.SuggestTags)))
 	mux.Handle("POST /transactions/ai-auto-tag", authMid(http.HandlerFunc(aiHandler.AutoTagBatch)))
 
 	// ── Tags ──────────────────────────────────────────────────────────────────
 	mux.Handle("GET /tags", authMid(http.HandlerFunc(tagHandler.List)))
+	mux.Handle("GET /tags/frequent", authMid(http.HandlerFunc(tagHandler.ListFrequent)))
 	mux.Handle("POST /tags", authMid(http.HandlerFunc(tagHandler.Create)))
 	mux.Handle("PUT /tags/{id}", authMid(http.HandlerFunc(tagHandler.Update)))
 	mux.Handle("DELETE /tags/{id}", authMid(http.HandlerFunc(tagHandler.Delete)))
 
-
-
+	// ── Regras de Estabelecimento (Layer 1) ──────────────────────────────────
+	mux.Handle("GET /merchant-rules", authMid(http.HandlerFunc(aiHandler.ListRules)))
+	mux.Handle("POST /merchant-rules", authMid(http.HandlerFunc(aiHandler.CreateRule)))
+	mux.Handle("DELETE /merchant-rules/{id}", authMid(http.HandlerFunc(aiHandler.DeleteRule)))
 	// ── Contas bancárias ──────────────────────────────────────────────────────
 	mux.Handle("GET /accounts", authMid(http.HandlerFunc(accHandler.List)))
 	mux.Handle("POST /accounts", authMid(http.HandlerFunc(accHandler.Create)))

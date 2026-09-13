@@ -57,6 +57,7 @@ EXPOSE 8080
 
 # Ordem de inicialização:
 #   1. migrations — altera o schema do banco para a versão atual
-#   2. seed       — garante dados iniciais (idempotente)
+#   2. seed       — garante tags de sistema no banco (clean start sem usuários dummy)
 #   3. api        — sobe o servidor HTTP
-ENTRYPOINT ["/bin/sh", "-c", "./finager-migrate up && ./finager-seed && ./finager"]
+ENTRYPOINT ["/bin/sh", "-c", "./finager-migrate up && ./finager-seed --tags-only && ./finager"]
+

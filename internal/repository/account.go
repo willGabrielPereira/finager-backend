@@ -22,12 +22,18 @@ func (r *AccountRepository) Create(ctx context.Context, account *models.Account)
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
+	accType := account.Type
+	if accType == "" {
+		accType = "CHECKING"
+	}
+	account.Type = accType
+
 	query := `
-		INSERT INTO accounts (name, institution, family_id, created_by)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO accounts (name, institution, type, family_id, created_by)
+		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id, created_at, updated_at
 	`
-	err := r.pool.QueryRow(ctx, query, account.Name, account.Institution, account.FamilyID, account.CreatedBy).Scan(
+	err := r.pool.QueryRow(ctx, query, account.Name, account.Institution, account.Type, account.FamilyID, account.CreatedBy).Scan(
 		&account.ID, &account.CreatedAt, &account.UpdatedAt,
 	)
 	if err != nil {
@@ -45,12 +51,13 @@ func (r *AccountRepository) Create(ctx context.Context, account *models.Account)
 
 func (r *AccountRepository) FindVisibleAccounts(ctx context.Context, familyID, userID uuid.UUID) ([]*models.Account, error) {
 	query := `
-		SELECT a.id, a.name, a.institution, a.family_id, a.created_by, a.created_at, a.updated_at
+		SELECT a.id, a.name, a.institution, a.type, a.family_id, a.created_by, a.created_at, a.updated_at
 		FROM accounts a
 		LEFT JOIN account_allowed_users aau ON a.id = aau.account_id
 		WHERE a.family_id = $1
 		  AND (aau.user_id IS NULL OR aau.user_id = $2)
 		GROUP BY a.id
+		ORDER BY a.name ASC
 	`
 	rows, err := r.pool.Query(ctx, query, familyID, userID)
 	if err != nil {
@@ -61,7 +68,7 @@ func (r *AccountRepository) FindVisibleAccounts(ctx context.Context, familyID, u
 	var accounts []*models.Account
 	for rows.Next() {
 		var acc models.Account
-		if err := rows.Scan(&acc.ID, &acc.Name, &acc.Institution, &acc.FamilyID, &acc.CreatedBy, &acc.CreatedAt, &acc.UpdatedAt); err != nil {
+		if err := rows.Scan(&acc.ID, &acc.Name, &acc.Institution, &acc.Type, &acc.FamilyID, &acc.CreatedBy, &acc.CreatedAt, &acc.UpdatedAt); err != nil {
 			return nil, err
 		}
 		accounts = append(accounts, &acc)
@@ -86,9 +93,9 @@ func (r *AccountRepository) FindVisibleAccounts(ctx context.Context, familyID, u
 }
 
 func (r *AccountRepository) FindByID(ctx context.Context, id uuid.UUID) (*models.Account, error) {
-	query := `SELECT id, name, institution, family_id, created_by, created_at, updated_at FROM accounts WHERE id = $1`
+	query := `SELECT id, name, institution, type, family_id, created_by, created_at, updated_at FROM accounts WHERE id = $1`
 	var acc models.Account
-	err := r.pool.QueryRow(ctx, query, id).Scan(&acc.ID, &acc.Name, &acc.Institution, &acc.FamilyID, &acc.CreatedBy, &acc.CreatedAt, &acc.UpdatedAt)
+	err := r.pool.QueryRow(ctx, query, id).Scan(&acc.ID, &acc.Name, &acc.Institution, &acc.Type, &acc.FamilyID, &acc.CreatedBy, &acc.CreatedAt, &acc.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -110,8 +117,12 @@ func (r *AccountRepository) FindByID(ctx context.Context, id uuid.UUID) (*models
 }
 
 func (r *AccountRepository) Update(ctx context.Context, account *models.Account) error {
-	query := `UPDATE accounts SET name = $1, institution = $2, updated_at = now() WHERE id = $3 AND family_id = $4`
-	_, err := r.pool.Exec(ctx, query, account.Name, account.Institution, account.ID, account.FamilyID)
+	accType := account.Type
+	if accType == "" {
+		accType = "CHECKING"
+	}
+	query := `UPDATE accounts SET name = $1, institution = $2, type = $3, updated_at = now() WHERE id = $4 AND family_id = $5`
+	_, err := r.pool.Exec(ctx, query, account.Name, account.Institution, accType, account.ID, account.FamilyID)
 	if err != nil {
 		return err
 	}

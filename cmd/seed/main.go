@@ -14,6 +14,7 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -28,13 +29,17 @@ func main() {
 		log.Println("No .env file, reading from environment variables")
 	}
 
-	dbDsn := getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/finager?sslmode=disable")
+	tagsOnly := false
+	for _, arg := range os.Args[1:] {
+		if arg == "--tags-only" {
+			tagsOnly = true
+		}
+	}
+	if getEnv("SEED_TAGS_ONLY", "") == "true" {
+		tagsOnly = true
+	}
 
-	user1Login := requireEnv("USER1_LOGIN")
-	user1Password := requireEnv("USER1_PASSWORD")
-	user2Login := requireEnv("USER2_LOGIN")
-	user2Password := requireEnv("USER2_PASSWORD")
-	familyName := getEnv("SEED_FAMILY_NAME", "Família Principal")
+	dbDsn := getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/finager?sslmode=disable")
 
 	db, err := database.Connect(dbDsn)
 	if err != nil {
@@ -50,6 +55,21 @@ func main() {
 	if err := repos.EnsureIndexes(ctx); err != nil {
 		log.Fatalf("EnsureIndexes: %v", err)
 	}
+
+	// ── Tags de sistema ───────────────────────────────────────────────────────
+	nameToID := ensureSystemTags(ctx, repos.Tags)
+	log.Printf("✓ System Tags : %d tags ensured", len(nameToID))
+
+	if tagsOnly {
+		log.Println("✓ Seed completed in tags-only clean mode (no dummy users or dummy accounts created).")
+		return
+	}
+
+	user1Login := requireEnv("USER1_LOGIN")
+	user1Password := requireEnv("USER1_PASSWORD")
+	user2Login := requireEnv("USER2_LOGIN")
+	user2Password := requireEnv("USER2_PASSWORD")
+	familyName := getEnv("SEED_FAMILY_NAME", "Família Principal")
 
 	// ── Família ───────────────────────────────────────────────────────────────
 	family := ensureFamily(ctx, repos.Families, familyName)
@@ -68,12 +88,6 @@ func main() {
 	if err := repos.Families.AddMember(ctx, family.ID, user2.ID); err != nil {
 		log.Fatalf("AddMember user2: %v", err)
 	}
-
-	// ── Tags de sistema ───────────────────────────────────────────────────────
-	// ensureSystemTags retorna o mapa nome→ID para as tag rules usarem
-	nameToID := ensureSystemTags(ctx, repos.Tags)
-	log.Printf("✓ System Tags : %d tags ensured", len(nameToID))
-
 
 	// ── Contas bancárias ──────────────────────────────────────────────────────
 	sharedAcc := ensureAccount(ctx, repos.Accounts, "Conta Conjunta", "Nubank", family.ID, user1.ID, nil)

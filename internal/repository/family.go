@@ -100,3 +100,57 @@ func (r *FamilyRepository) AddMember(ctx context.Context, familyID, userID uuid.
 	_, err = r.pool.Exec(ctx, updateQuery, familyID)
 	return err
 }
+
+// UpdateName atualiza o nome da família.
+func (r *FamilyRepository) UpdateName(ctx context.Context, familyID uuid.UUID, name string) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	query := `UPDATE families SET name = $1, updated_at = now() WHERE id = $2`
+	_, err := r.pool.Exec(ctx, query, name, familyID)
+	return err
+}
+
+// GetMembers retorna informações detalhadas dos membros da família.
+func (r *FamilyRepository) GetMembers(ctx context.Context, familyID uuid.UUID) ([]models.FamilyMemberInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	query := `
+		SELECT u.id, u.login, coalesce(u.email, ''), u.created_at
+		FROM family_members fm
+		JOIN users u ON u.id = fm.user_id
+		WHERE fm.family_id = $1
+		ORDER BY u.created_at ASC
+	`
+	rows, err := r.pool.Query(ctx, query, familyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var members []models.FamilyMemberInfo
+	for rows.Next() {
+		var m models.FamilyMemberInfo
+		if err := rows.Scan(&m.UserID, &m.Login, &m.Email, &m.JoinedAt); err != nil {
+			return nil, err
+		}
+		members = append(members, m)
+	}
+
+	if members == nil {
+		members = []models.FamilyMemberInfo{}
+	}
+	return members, nil
+}
+
+// RemoveMember remove um membro da família.
+func (r *FamilyRepository) RemoveMember(ctx context.Context, familyID, userID uuid.UUID) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	query := `DELETE FROM family_members WHERE family_id = $1 AND user_id = $2`
+	_, err := r.pool.Exec(ctx, query, familyID, userID)
+	return err
+}
+

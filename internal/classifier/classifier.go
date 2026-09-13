@@ -10,54 +10,54 @@ import (
 )
 
 // DefaultTrainingData representa a base estática de dados para evitar o problema de cold-start.
-// Mapeia termos comuns de faturas brasileiras para nomes legíveis de tags de sistema.
+// Mapeia termos característicos e livres de ruídos ambíguos para nomes de tags de sistema.
 var DefaultTrainingData = []struct {
 	Text    string
 	TagName string
 }{
 	// --- Compras ---
-	{"amazon marketplace prime video s.a.", "Compras"},
-	{"shopee br compras internet", "Compras"},
+	{"amazon marketplace prime video", "Compras"},
+	{"shopee internet", "Compras"},
 	{"mercado livre meli", "Compras"},
-	{"shein shein br", "Compras"},
+	{"shein", "Compras"},
 	{"magazine luiza magalu", "Compras"},
-	{"americanas com", "Compras"},
+	{"americanas", "Compras"},
 	{"aliexpress cainiao", "Compras"},
 	{"casas bahia varejo", "Compras"},
 	// --- Alimentação ---
-	{"ifood *restaurante alimentacao", "Alimentação"},
-	{"ifood *entrega lanches", "Alimentação"},
+	{"ifood restaurante alimentacao", "Alimentação"},
+	{"ifood entrega lanches", "Alimentação"},
 	{"mcdonalds burger king habibs bobs", "Alimentação"},
 	{"subway sanduiches", "Alimentação"},
 	{"padaria panificadora confeitaria", "Alimentação"},
-	{"restaurante self service almoço janta", "Alimentação"},
+	{"restaurante self service almoco janta", "Alimentação"},
 	// --- Mercado ---
-	{"supermercado carrefour extra dia pão de açúcar", "Mercado"},
-	{"hortifruti sacolao feira sacolão hortifrúti", "Mercado"},
-	{"assai atacadao pague menos mercado mercadinho", "Mercado"},
+	{"supermercado carrefour extra pao de acucar", "Mercado"},
+	{"hortifruti sacolao feira", "Mercado"},
+	{"assai atacadao pague menos mercadinho", "Mercado"},
 	// --- Vestuário ---
-	{"renner c&a cea riachuelo zara lojas", "Vestuário"},
+	{"renner riachuelo zara", "Vestuário"},
 	{"centauro decathlon hering roupas vestuario", "Vestuário"},
 	{"calcados sapatos botas tennis", "Vestuário"},
 	// --- Pet ---
 	{"petz cobasi petshop pet shop", "Pet"},
-	{"veterinario racao ração banho tosa clinica pet", "Pet"},
+	{"veterinario racao banho tosa clinica pet", "Pet"},
 	// --- Transporte ---
-	{"uber *trip corrida carona", "Transporte"},
+	{"uber trip corrida carona", "Transporte"},
 	{"99app 99taxi taxi", "Transporte"},
 	{"posto shell combustivel gasolina", "Transporte"},
-	{"posto ipiranga petrobras br", "Transporte"},
+	{"posto ipiranga petrobras", "Transporte"},
 	{"sem parar pedagio", "Transporte"},
 	{"bilhete unico metro trem rodoviaria", "Transporte"},
 	{"latam gol azul passagens aereas", "Transporte"},
 	// --- Streamings ---
-	{"netflix.com netflix assinatura", "Streamings"},
+	{"netflix assinatura", "Streamings"},
 	{"spotify music stream premium", "Streamings"},
 	{"youtube premium google", "Streamings"},
 	{"hbo max discovery plus", "Streamings"},
-	{"disney plus disney+", "Streamings"},
+	{"disney plus disney", "Streamings"},
 	{"amazon prime channels", "Streamings"},
-	{"globoplay globo com", "Streamings"},
+	{"globoplay globo", "Streamings"},
 	// --- Saúde ---
 	{"droga raia farmacia medicamentos", "Saúde"},
 	{"drogasil farmacia", "Saúde"},
@@ -72,7 +72,7 @@ var DefaultTrainingData = []struct {
 	{"condominio aluguel imobiliaria", "Moradia"},
 	{"material de construcao leroy merlin", "Moradia"},
 	// --- Contas ---
-	{"boleto cobranca pagamento fatura cartao de credito", "Contas"},
+	{"boleto cobranca pagamento fatura cartao", "Contas"},
 	{"telefone celular vivo tim claro net telecom internet", "Contas"},
 	// --- Educação ---
 	{"udemy cursos online", "Educação"},
@@ -80,22 +80,20 @@ var DefaultTrainingData = []struct {
 	{"coursera faculdade universidade mensalidade", "Educação"},
 	{"escola colegio matricula material escolar", "Educação"},
 	// --- Salário ---
-	{"ted recebido salario folha de pagamento", "Salário"},
-	{"pix recebido proventos honorarios", "Salário"},
-	{"pagamento salario mensal", "Salário"},
+	{"salario folha de pagamento", "Salário"},
+	{"proventos honorarios remuneracao", "Salário"},
 	// --- Entretenimento ---
 	{"cinemark shopping bilheteria", "Entretenimento"},
 	{"cinepolis cinema pipoca", "Entretenimento"},
-	{"gnc cinemas ingresso com", "Entretenimento"},
+	{"gnc cinemas ingresso", "Entretenimento"},
 	{"steam games jogos", "Entretenimento"},
 	{"playstation network psn", "Entretenimento"},
-	{"ingressocruz show concerto", "Entretenimento"},
 }
 
 // Classifier implementa um classificador probabilístico Naive Bayes.
 type Classifier struct {
 	TotalDocs       int
-	ClassDocs       map[string]int            // Qtd de documentos por classe (Hex do ObjectID da Tag)
+	ClassDocs       map[string]int            // Qtd de documentos por classe (Hex do UUID da Tag)
 	ClassWordCounts map[string]map[string]int // Frequência de cada palavra por classe
 	ClassTotalWords map[string]int            // Total de palavras por classe
 	Vocabulary      map[string]struct{}       // Vocabulário único geral
@@ -111,12 +109,51 @@ func New() *Classifier {
 	}
 }
 
-// Tokenize limpa o texto, remove pontuação e filtra stop-words em português.
+func stripAccents(s string) string {
+	s = strings.ToLower(s)
+	replacer := strings.NewReplacer(
+		"á", "a", "à", "a", "ã", "a", "â", "a", "ä", "a",
+		"é", "e", "è", "e", "ê", "e", "ë", "e",
+		"í", "i", "ì", "i", "î", "i", "ï", "i",
+		"ó", "o", "ò", "o", "õ", "o", "ô", "o", "ö", "o",
+		"ú", "u", "ù", "u", "û", "u", "ü", "u",
+		"ç", "c", "ñ", "n",
+	)
+	return replacer.Replace(s)
+}
+
+// CleanMerchantName remove ruídos bancários e prefixos comuns de extratos brasileiros
+func CleanMerchantName(name, memo string) string {
+	raw := strings.ToUpper(strings.TrimSpace(name))
+	if raw == "" {
+		raw = strings.ToUpper(strings.TrimSpace(memo))
+	}
+
+	prefixes := []string{
+		"COMPRA CARTAO DEB ", "COMPRA CARTAO CRED ", "COMPRA CARTAO ",
+		"COMPRA NO DEBITO ", "COMPRA NO CREDITO ", "COMPRA INTERNET ",
+		"PAGTO ELETRON COBRANCA ", "PAGTO ELETRON ", "PAGTO COBRANCA ",
+		"PAGAMENTO DE TITULO ", "PAGAMENTO TITULO ", "PAGAMENTO ELETRONICO ",
+		"PIX TRANSF ", "PIX RECEBIDO ", "PIX ENVIADO ", "PIX ",
+		"TED TRANSF ", "TED RECEBIDA ", "TED ENVIADA ", "TED ",
+		"DOC ", "ESTORNO ",
+	}
+
+	for _, p := range prefixes {
+		if strings.HasPrefix(raw, p) {
+			raw = strings.TrimPrefix(raw, p)
+			break
+		}
+	}
+
+	return strings.TrimSpace(raw)
+}
+
+// Tokenize normaliza acentuação, limpa caracteres especiais e filtra stop-words e ruídos bancários.
 func Tokenize(text string) []string {
-	text = strings.ToLower(text)
+	text = stripAccents(text)
 	var sb strings.Builder
 	for _, r := range text {
-		// Mantém apenas letras, números e espaços
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == ' ' {
 			sb.WriteRune(r)
 		} else {
@@ -126,16 +163,22 @@ func Tokenize(text string) []string {
 
 	words := strings.Fields(sb.String())
 	stopWords := map[string]struct{}{
+		// Preposições e artigos
 		"de": {}, "do": {}, "da": {}, "em": {}, "um": {}, "uma": {}, "o": {}, "a": {},
 		"os": {}, "as": {}, "com": {}, "para": {}, "por": {}, "e": {}, "ou": {}, "se": {},
-		"no": {}, "na": {}, "dos": {}, "das": {}, "comprar": {}, "compra": {},
-		"pagamento": {}, "transação": {}, "ted": {}, "doc": {}, "pix": {}, "ref": {},
-		"valor": {}, "estabelecimento": {},
+		"no": {}, "na": {}, "dos": {}, "das": {}, "ao": {}, "aos": {},
+		// Ruídos bancários comuns
+		"comprar": {}, "compra": {}, "pagamento": {}, "transacao": {}, "ted": {}, "doc": {},
+		"pix": {}, "ref": {}, "valor": {}, "estabelecimento": {}, "debito": {}, "credito": {},
+		"cartao": {}, "pagto": {}, "transf": {}, "transferencia": {}, "aut": {}, "agencia": {},
+		"banco": {}, "estorno": {}, "tarifa": {}, "iof": {}, "terminal": {},
+		// Palavras ambíguas curtas que geram falso positivo
+		"dia": {}, "br": {}, "lojas": {}, "loja": {}, "ltda": {}, "me": {}, "sa": {}, "eireli": {},
 	}
 
 	var filtered []string
 	for _, w := range words {
-		if len(w) < 2 { // Descarta letras avulsas
+		if len(w) < 3 { // Descarta letras avulsas e termos curtíssimos
 			continue
 		}
 		if _, isStop := stopWords[w]; !isStop {
@@ -167,15 +210,14 @@ func (c *Classifier) Train(text string, tagID uuid.UUID) {
 	}
 }
 
-// Classify analisa o texto e retorna a tag mais provável (se houver correspondência estatística confiável).
+// Classify analisa o texto e retorna a tag mais provável se houver margem de confiança estatística segura.
 func (c *Classifier) Classify(text string) []uuid.UUID {
 	words := Tokenize(text)
 	if len(words) == 0 || c.TotalDocs == 0 || len(c.ClassDocs) == 0 {
 		return nil
 	}
 
-	// Certifica que pelo menos uma das palavras existe no vocabulário geral.
-	// Se for tudo palavras novas, o classificador não tem dados para sugerir.
+	// Certifica que pelo menos uma palavra relevante existe no vocabulário
 	hasKnownWord := false
 	for _, w := range words {
 		if _, exists := c.Vocabulary[w]; exists {
@@ -187,18 +229,16 @@ func (c *Classifier) Classify(text string) []uuid.UUID {
 		return nil
 	}
 
-
 	bestProb := -math.MaxFloat64
+	secondBestProb := -math.MaxFloat64
 	var bestClass string
 	hasMatch := false
 
 	// Computa log P(C | D) = log P(C) + sum log P(w | C) para cada classe
 	for class := range c.ClassDocs {
-		// Prior probability P(C)
 		prior := float64(c.ClassDocs[class]) / float64(c.TotalDocs)
 		logProb := math.Log(prior)
 
-		// Likelihood sum log P(w | C)
 		for _, w := range words {
 			count := c.ClassWordCounts[class][w]
 			// Laplace smoothing (add-one smoothing)
@@ -207,14 +247,27 @@ func (c *Classifier) Classify(text string) []uuid.UUID {
 		}
 
 		if logProb > bestProb {
+			secondBestProb = bestProb
 			bestProb = logProb
 			bestClass = class
 			hasMatch = true
+		} else if logProb > secondBestProb {
+			secondBestProb = logProb
 		}
 	}
 
 	if !hasMatch {
 		return nil
+	}
+
+	// Limiar de confiança (Confidence Threshold):
+	// Se houver mais de uma classe e a melhor não superar a segunda por uma margem estatística mínima segura,
+	// abstenha-se de forçar uma tag duvidosa!
+	if len(c.ClassDocs) > 1 {
+		const minConfidenceMargin = 0.1 // Exige margem segura sobre a 2ª colocada
+		if (bestProb - secondBestProb) < minConfidenceMargin {
+			return nil // Abstenção inteligente
+		}
 	}
 
 	id, err := uuid.Parse(bestClass)

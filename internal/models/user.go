@@ -11,6 +11,7 @@ import (
 type User struct {
 	ID           uuid.UUID `json:"id,omitempty"`
 	Login        string    `json:"login"`
+	Email        string    `json:"email"`
 	PasswordHash string    `json:"-"` // never exposed
 	FamilyID     uuid.UUID `json:"family_id"`
 	CreatedAt    time.Time `json:"created_at"`

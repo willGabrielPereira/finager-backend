@@ -46,10 +46,14 @@ func Struct(data interface{}) []response.ValidationError {
 			switch e.Tag() {
 			case "required":
 				msg = "Este campo é de preenchimento obrigatório"
+			case "email":
+				msg = "Informe um endereço de e-mail válido"
 			case "min":
-				msg = "O valor inserido é insuficiente ou mais curto que o mínimo aceitável (" + e.Param() + ")"
+				msg = "O valor inserido é insuficiente ou mais curto que o mínimo aceitável (" + e.Param() + " caracteres)"
 			case "max":
-				msg = "O valor inserido excede o limite máximo permitido (" + e.Param() + ")"
+				msg = "O valor inserido excede o limite máximo permitido (" + e.Param() + " caracteres)"
+			case "alphanum":
+				msg = "Este campo deve conter apenas letras e números"
 			case "hexcolor":
 				msg = "Cor tem que estar no padrão hexadecimal (Ex: #FF00AA)"
 			}
