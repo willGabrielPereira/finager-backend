@@ -104,6 +104,9 @@ func TestCleanMerchantName(t *testing.T) {
 		{"PIX TRANSF LUCAS SILVA", "CHAVE CPF", "LUCAS SILVA"},
 		{"PAGTO ELETRON COBRANCA ENEL ENERGIA", "", "ENEL ENERGIA"},
 		{"MERCADO LIVRE", "", "MERCADO LIVRE"},
+		{"Compra no débito - AlessandraWippel", "", "ALESSANDRAWIPPEL"},
+		{"Compra no débito - IC SUSHI", "", "IC SUSHI"},
+		{"Transferência recebida pelo Pix - WILLIAM GABRIEL PEREIRA - •••.225.699-••", "", "WILLIAM GABRIEL PEREIRA - •••.225.699-••"},
 	}
 
 	for _, tt := range tests {

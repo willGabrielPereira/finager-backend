@@ -53,7 +53,10 @@ func (r *TransactionRepository) BulkUpsert(ctx context.Context, txs []models.Tra
 				manually_tagged, status, is_transfer, destination_account_id, source
 			)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-			ON CONFLICT (fitid, account_id, family_id) DO NOTHING
+			ON CONFLICT (fitid, account_id, family_id) DO UPDATE
+			SET name = EXCLUDED.name,
+			    memo = EXCLUDED.memo
+			WHERE (transactions.name = '' OR transactions.name IS NULL) AND EXCLUDED.name != ''
 			RETURNING id
 		`
 		err := r.pool.QueryRow(

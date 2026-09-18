@@ -128,12 +128,17 @@ func CleanMerchantName(name, memo string) string {
 	if raw == "" {
 		raw = strings.ToUpper(strings.TrimSpace(memo))
 	}
+	raw = strings.ToUpper(stripAccents(raw))
 
 	prefixes := []string{
+		"COMPRA CARTAO DEB - ", "COMPRA CARTAO CRED - ", "COMPRA CARTAO - ",
+		"COMPRA NO DEBITO - ", "COMPRA NO CREDITO - ", "COMPRA INTERNET - ",
 		"COMPRA CARTAO DEB ", "COMPRA CARTAO CRED ", "COMPRA CARTAO ",
 		"COMPRA NO DEBITO ", "COMPRA NO CREDITO ", "COMPRA INTERNET ",
 		"PAGTO ELETRON COBRANCA ", "PAGTO ELETRON ", "PAGTO COBRANCA ",
 		"PAGAMENTO DE TITULO ", "PAGAMENTO TITULO ", "PAGAMENTO ELETRONICO ",
+		"TRANSFERENCIA RECEBIDA PELO PIX - ", "TRANSFERENCIA ENVIADA PELO PIX - ",
+		"TRANSFERENCIA RECEBIDA PELO PIX ", "TRANSFERENCIA ENVIADA PELO PIX ",
 		"PIX TRANSF ", "PIX RECEBIDO ", "PIX ENVIADO ", "PIX ",
 		"TED TRANSF ", "TED RECEBIDA ", "TED ENVIADA ", "TED ",
 		"DOC ", "ESTORNO ",
@@ -145,6 +150,9 @@ func CleanMerchantName(name, memo string) string {
 			break
 		}
 	}
+
+	raw = strings.TrimPrefix(raw, "- ")
+	raw = strings.TrimPrefix(raw, "-")
 
 	return strings.TrimSpace(raw)
 }

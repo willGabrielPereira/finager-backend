@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -54,13 +55,24 @@ func convertTransaction(rawTx ofxgo.Transaction, accountID, familyID, createdBy 
 		amount = 0
 	}
 
+	name := strings.TrimSpace(string(rawTx.Name))
+	memo := strings.TrimSpace(string(rawTx.Memo))
+
+	// Bancos como Nubank e Itaú frequentemente omitem a tag <NAME> e enviam a descrição em <MEMO>.
+	if name == "" {
+		name = memo
+	}
+	if memo == "" {
+		memo = name
+	}
+
 	return models.Transaction{
 		FITID:      string(rawTx.FiTID),
 		Type:       rawTx.TrnType.String(),
 		DatePosted: rawTx.DtPosted.Time,
 		Amount:     amount,
-		Name:       string(rawTx.Name),
-		Memo:       string(rawTx.Memo),
+		Name:       name,
+		Memo:       memo,
 		Tags:       []uuid.UUID{},
 		AccountID:  accountID,
 		FamilyID:   familyID,
