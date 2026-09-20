@@ -12,6 +12,7 @@ import (
 	"github.com/willGabrielPereira/finager-backend/internal/models"
 	"github.com/willGabrielPereira/finager-backend/internal/repository"
 	"github.com/willGabrielPereira/finager-backend/internal/response"
+	"github.com/willGabrielPereira/finager-backend/internal/billing"
 	"github.com/willGabrielPereira/finager-backend/pkg/validator"
 )
 
@@ -19,17 +20,20 @@ type FamilyHandler struct {
 	familyRepo *repository.FamilyRepository
 	inviteRepo *repository.FamilyInviteRepository
 	userRepo   *repository.UserRepository
+	billingSvc *billing.Service
 }
 
 func NewFamilyHandler(
 	familyRepo *repository.FamilyRepository,
 	inviteRepo *repository.FamilyInviteRepository,
 	userRepo *repository.UserRepository,
+	billingSvc *billing.Service,
 ) *FamilyHandler {
 	return &FamilyHandler{
 		familyRepo: familyRepo,
 		inviteRepo: inviteRepo,
 		userRepo:   userRepo,
+		billingSvc: billingSvc,
 	}
 }
 
@@ -82,6 +86,13 @@ func (h *FamilyHandler) CreateInvite(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		response.Error(w, http.StatusUnauthorized, "E_INVALID_SESSION", "Família inválida no token")
 		return
+	}
+
+	if h.billingSvc != nil {
+		if err := h.billingSvc.CheckCanAddMember(r.Context(), familyID); err != nil {
+			response.Error(w, http.StatusForbidden, "E_PLAN_LIMIT_REACHED", err.Error())
+			return
+		}
 	}
 
 	userID, err := uuid.Parse(claims.UserID)

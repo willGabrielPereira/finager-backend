@@ -25,12 +25,19 @@ func (r *FamilyRepository) Create(ctx context.Context, family *models.Family) er
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
+	if family.Plan == "" {
+		family.Plan = models.PlanFree
+	}
+	if family.SubscriptionStatus == "" {
+		family.SubscriptionStatus = models.StatusActive
+	}
+
 	query := `
-		INSERT INTO families (name)
-		VALUES ($1)
+		INSERT INTO families (name, plan, subscription_status, subscription_expires_at, subscription_provider)
+		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id, created_at, updated_at
 	`
-	err := r.pool.QueryRow(ctx, query, family.Name).Scan(&family.ID, &family.CreatedAt, &family.UpdatedAt)
+	err := r.pool.QueryRow(ctx, query, family.Name, family.Plan, family.SubscriptionStatus, family.SubscriptionExpiresAt, family.SubscriptionProvider).Scan(&family.ID, &family.CreatedAt, &family.UpdatedAt)
 	return err
 }
 
@@ -40,8 +47,10 @@ func (r *FamilyRepository) FindByID(ctx context.Context, id uuid.UUID) (*models.
 	defer cancel()
 
 	var family models.Family
-	query := `SELECT id, name, created_at, updated_at FROM families WHERE id = $1`
-	err := r.pool.QueryRow(ctx, query, id).Scan(&family.ID, &family.Name, &family.CreatedAt, &family.UpdatedAt)
+	query := `SELECT id, name, plan, subscription_status, subscription_expires_at, subscription_provider, created_at, updated_at FROM families WHERE id = $1`
+	err := r.pool.QueryRow(ctx, query, id).Scan(
+		&family.ID, &family.Name, &family.Plan, &family.SubscriptionStatus, &family.SubscriptionExpiresAt, &family.SubscriptionProvider, &family.CreatedAt, &family.UpdatedAt,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -73,8 +82,10 @@ func (r *FamilyRepository) FindByName(ctx context.Context, name string) (*models
 	defer cancel()
 
 	var family models.Family
-	query := `SELECT id, name, created_at, updated_at FROM families WHERE name = $1 LIMIT 1`
-	err := r.pool.QueryRow(ctx, query, name).Scan(&family.ID, &family.Name, &family.CreatedAt, &family.UpdatedAt)
+	query := `SELECT id, name, plan, subscription_status, subscription_expires_at, subscription_provider, created_at, updated_at FROM families WHERE name = $1 LIMIT 1`
+	err := r.pool.QueryRow(ctx, query, name).Scan(
+		&family.ID, &family.Name, &family.Plan, &family.SubscriptionStatus, &family.SubscriptionExpiresAt, &family.SubscriptionProvider, &family.CreatedAt, &family.UpdatedAt,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -152,5 +163,39 @@ func (r *FamilyRepository) RemoveMember(ctx context.Context, familyID, userID uu
 	query := `DELETE FROM family_members WHERE family_id = $1 AND user_id = $2`
 	_, err := r.pool.Exec(ctx, query, familyID, userID)
 	return err
+}
+
+// UpdatePlan altera o plano, status de assinatura e datas de vigência da família.
+func (r *FamilyRepository) UpdatePlan(ctx context.Context, familyID uuid.UUID, plan, status string, expiresAt *time.Time, provider *string) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	query := `
+		UPDATE families
+		SET plan = $1, subscription_status = $2, subscription_expires_at = $3, subscription_provider = $4, updated_at = now()
+		WHERE id = $5
+	`
+	_, err := r.pool.Exec(ctx, query, plan, status, expiresAt, provider, familyID)
+	return err
+}
+
+// CountAccounts retorna a quantidade de contas bancárias ativas cadastradas pela família.
+func (r *FamilyRepository) CountAccounts(ctx context.Context, familyID uuid.UUID) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var count int
+	err := r.pool.QueryRow(ctx, `SELECT count(*) FROM accounts WHERE family_id = $1`, familyID).Scan(&count)
+	return count, err
+}
+
+// CountMembers retorna a quantidade de membros associados à família.
+func (r *FamilyRepository) CountMembers(ctx context.Context, familyID uuid.UUID) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var count int
+	err := r.pool.QueryRow(ctx, `SELECT count(*) FROM family_members WHERE family_id = $1`, familyID).Scan(&count)
+	return count, err
 }
 

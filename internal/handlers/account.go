@@ -12,15 +12,17 @@ import (
 	"github.com/willGabrielPereira/finager-backend/internal/models"
 	"github.com/willGabrielPereira/finager-backend/internal/repository"
 	"github.com/willGabrielPereira/finager-backend/internal/response"
+	"github.com/willGabrielPereira/finager-backend/internal/billing"
 	"github.com/willGabrielPereira/finager-backend/pkg/validator"
 )
 
 type AccountHandler struct {
-	accRepo *repository.AccountRepository
+	accRepo    *repository.AccountRepository
+	billingSvc *billing.Service
 }
 
-func NewAccountHandler(accRepo *repository.AccountRepository) *AccountHandler {
-	return &AccountHandler{accRepo: accRepo}
+func NewAccountHandler(accRepo *repository.AccountRepository, billingSvc *billing.Service) *AccountHandler {
+	return &AccountHandler{accRepo: accRepo, billingSvc: billingSvc}
 }
 
 // createAccountRequest DTO
@@ -86,6 +88,13 @@ func (h *AccountHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	familyID, _ := uuid.Parse(claims.FamilyID)
 	userID, _ := uuid.Parse(claims.UserID)
+
+	if h.billingSvc != nil {
+		if err := h.billingSvc.CheckCanAddAccount(r.Context(), familyID); err != nil {
+			response.Error(w, http.StatusForbidden, "E_PLAN_LIMIT_REACHED", err.Error())
+			return
+		}
+	}
 
 	// Converte array de String pro padrao DB
 	var dbAllowedUsers []uuid.UUID

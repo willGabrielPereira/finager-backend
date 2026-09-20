@@ -13,7 +13,11 @@ import (
 type Family struct {
 	ID        uuid.UUID   `json:"id,omitempty"`
 	Name      string      `json:"name"`
-	MemberIDs []uuid.UUID `json:"member_ids"`
-	CreatedAt time.Time   `json:"created_at"`
-	UpdatedAt time.Time   `json:"updated_at"`
+	MemberIDs             []uuid.UUID `json:"member_ids"`
+	Plan                  string      `json:"plan"`
+	SubscriptionStatus    string      `json:"subscription_status"`
+	SubscriptionExpiresAt *time.Time  `json:"subscription_expires_at,omitempty"`
+	SubscriptionProvider  *string     `json:"subscription_provider,omitempty"`
+	CreatedAt             time.Time   `json:"created_at"`
+	UpdatedAt             time.Time   `json:"updated_at"`
 }

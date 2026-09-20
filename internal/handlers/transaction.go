@@ -29,6 +29,7 @@ type TransactionHandler struct {
 	tagRepo      *repository.TagRepository
 	stateRepo    *repository.ClassifierStateRepository
 	merchantRepo *repository.MerchantMappingRepository
+	familyRepo   *repository.FamilyRepository
 }
 
 // NewTransactionHandler cria um TransactionHandler com repositórios e lógicas injetadas.
@@ -38,6 +39,7 @@ func NewTransactionHandler(
 	tagRepo *repository.TagRepository,
 	stateRepo *repository.ClassifierStateRepository,
 	merchantRepo *repository.MerchantMappingRepository,
+	familyRepo *repository.FamilyRepository,
 ) *TransactionHandler {
 	return &TransactionHandler{
 		txRepo:       txRepo,
@@ -45,6 +47,7 @@ func NewTransactionHandler(
 		tagRepo:      tagRepo,
 		stateRepo:    stateRepo,
 		merchantRepo: merchantRepo,
+		familyRepo:   familyRepo,
 	}
 }
 
@@ -491,6 +494,19 @@ func (h *TransactionHandler) List(w http.ResponseWriter, r *http.Request) {
 	if v := q.Get("amount_max"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			filter.AmountMax = &f
+		}
+	}
+
+	// Aplica restrição de histórico do plano (ex: 90 dias no plano FREE)
+	if h.familyRepo != nil {
+		if family, err := h.familyRepo.FindByID(r.Context(), familyID); err == nil && family != nil {
+			limits := models.GetPlanLimits(family.Plan, family.SubscriptionStatus)
+			if limits.MaxHistoryDays > 0 {
+				earliestAllowed := time.Now().AddDate(0, 0, -limits.MaxHistoryDays)
+				if filter.DateFrom.IsZero() || filter.DateFrom.Before(earliestAllowed) {
+					filter.DateFrom = earliestAllowed
+				}
+			}
 		}
 	}
 

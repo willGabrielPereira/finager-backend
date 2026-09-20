@@ -7,6 +7,7 @@ import (
 	httpSwagger "github.com/swaggo/http-swagger"
 
 	"github.com/willGabrielPereira/finager-backend/internal/auth"
+	"github.com/willGabrielPereira/finager-backend/internal/billing"
 	"github.com/willGabrielPereira/finager-backend/internal/handlers"
 	"github.com/willGabrielPereira/finager-backend/internal/middleware"
 	"github.com/willGabrielPereira/finager-backend/internal/repository"
@@ -35,12 +36,16 @@ func registerRoutes(
 	loginLimiter := middleware.NewInMemoryRateLimiter(10, time.Minute)
 	refreshLimiter := middleware.NewInMemoryRateLimiter(20, time.Minute)
 
-	txHandler := handlers.NewTransactionHandler(repos.Transactions, repos.Accounts, repos.Tags, repos.ClassifierStates, repos.MerchantMappings)
+	mockBillingProvider := billing.NewMockProvider()
+	billingSvc := billing.NewService(mockBillingProvider, repos.Families, repos.Coupons)
+	billingHandler := handlers.NewBillingHandler(billingSvc)
+
+	txHandler := handlers.NewTransactionHandler(repos.Transactions, repos.Accounts, repos.Tags, repos.ClassifierStates, repos.MerchantMappings, repos.Families)
 	tagHandler := handlers.NewTagHandler(repos.Tags)
-	accHandler := handlers.NewAccountHandler(repos.Accounts)
+	accHandler := handlers.NewAccountHandler(repos.Accounts, billingSvc)
 	aiHandler := handlers.NewAIHandler(repos.Transactions, repos.Tags, repos.ClassifierStates, repos.MerchantMappings)
 	profileHandler := handlers.NewProfileHandler(repos.Users, repos.Families)
-	familyHandler := handlers.NewFamilyHandler(repos.Families, repos.Invites, repos.Users)
+	familyHandler := handlers.NewFamilyHandler(repos.Families, repos.Invites, repos.Users, billingSvc)
 
 	// ── Públicas ──────────────────────────────────────────────────────────────
 	mux.HandleFunc("GET /health", handlers.HealthHandler)
@@ -57,9 +62,17 @@ func registerRoutes(
 	mux.Handle("POST /auth/logout", authMid(http.HandlerFunc(authHandler.Logout)))
 	mux.Handle("PUT /auth/password", authMid(http.HandlerFunc(authHandler.ChangePassword)))
 
-	// ── Perfil do Usuário ─────────────────────────────────────────────────────
+	// ── Perfil do Usuário & LGPD ──────────────────────────────────────────────
 	mux.Handle("GET /me", authMid(http.HandlerFunc(profileHandler.Get)))
 	mux.Handle("PUT /me", authMid(http.HandlerFunc(profileHandler.Update)))
+	mux.Handle("PATCH /me/onboarding", authMid(http.HandlerFunc(profileHandler.UpdateOnboarding)))
+	mux.Handle("DELETE /me", authMid(http.HandlerFunc(profileHandler.Delete)))
+
+	// ── Planos & Faturamento (Billing) ────────────────────────────────────────
+	mux.Handle("GET /billing/plan", authMid(http.HandlerFunc(billingHandler.GetPlan)))
+	mux.Handle("POST /billing/coupons/apply", authMid(http.HandlerFunc(billingHandler.ApplyCoupon)))
+	mux.Handle("POST /billing/simulate-upgrade", authMid(http.HandlerFunc(billingHandler.SimulateUpgrade)))
+	mux.Handle("POST /billing/simulate-downgrade", authMid(http.HandlerFunc(billingHandler.SimulateDowngrade)))
 
 	// ── Família & Convites ────────────────────────────────────────────────────
 	mux.HandleFunc("GET /family/invites/validate", familyHandler.ValidateInvite)
@@ -67,7 +80,6 @@ func registerRoutes(
 	mux.Handle("POST /family/invites", authMid(http.HandlerFunc(familyHandler.CreateInvite)))
 	mux.Handle("POST /family/join", authMid(http.HandlerFunc(familyHandler.Join)))
 	mux.Handle("DELETE /family/members/{id}", authMid(http.HandlerFunc(familyHandler.RemoveMember)))
-
 
 	// ── Transações ────────────────────────────────────────────────────────────
 	mux.Handle("POST /transactions", authMid(http.HandlerFunc(txHandler.Create)))

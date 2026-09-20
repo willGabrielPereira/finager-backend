@@ -3,20 +3,27 @@
 -- IDs externos (FITID do OFX) continuam como TEXT.
 
 CREATE TABLE IF NOT EXISTS families (
-    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name       TEXT        NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name                     TEXT        NOT NULL,
+    plan                     TEXT        NOT NULL DEFAULT 'FREE',
+    subscription_status      TEXT        NOT NULL DEFAULT 'ACTIVE',
+    subscription_expires_at  TIMESTAMPTZ,
+    subscription_provider    TEXT,
+    external_subscription_id TEXT,
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS users (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    login         TEXT        NOT NULL UNIQUE,
-    email         TEXT        UNIQUE,
-    password_hash TEXT        NOT NULL,
-    family_id     UUID        NOT NULL REFERENCES families(id) ON DELETE CASCADE,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    login                TEXT        NOT NULL UNIQUE,
+    email                TEXT        UNIQUE,
+    password_hash        TEXT        NOT NULL,
+    family_id            UUID        NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+    onboarding_completed BOOLEAN     NOT NULL DEFAULT false,
+    onboarding_step      INT         NOT NULL DEFAULT 0,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- Membros de uma família (relação N:N users<->families)
@@ -142,3 +149,17 @@ CREATE INDEX IF NOT EXISTS idx_blocklist_expires ON blocklist(expires_at);
 CREATE INDEX IF NOT EXISTS idx_tags_family ON tags(family_id);
 CREATE INDEX IF NOT EXISTS idx_family_invites_token ON family_invites(token);
 CREATE INDEX IF NOT EXISTS idx_family_invites_family ON family_invites(family_id);
+
+CREATE TABLE IF NOT EXISTS coupons (
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    code             TEXT NOT NULL UNIQUE,
+    discount_percent INT NOT NULL,
+    plan_granted     TEXT NOT NULL DEFAULT 'PRO',
+    max_uses         INT,
+    times_used       INT NOT NULL DEFAULT 0,
+    expires_at       TIMESTAMPTZ,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_coupons_code ON coupons(lower(code));
+CREATE INDEX IF NOT EXISTS idx_families_plan ON families(plan);

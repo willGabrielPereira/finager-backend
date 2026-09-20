@@ -32,9 +32,9 @@ func (r *UserRepository) FindByLogin(ctx context.Context, login string) (*models
 
 	var user models.User
 	var email *string
-	query := `SELECT id, login, email, password_hash, family_id, created_at, updated_at FROM users WHERE lower(login) = lower($1)`
+	query := `SELECT id, login, email, password_hash, family_id, onboarding_completed, onboarding_step, created_at, updated_at FROM users WHERE lower(login) = lower($1)`
 	err := r.pool.QueryRow(ctx, query, login).Scan(
-		&user.ID, &user.Login, &email, &user.PasswordHash, &user.FamilyID, &user.CreatedAt, &user.UpdatedAt,
+		&user.ID, &user.Login, &email, &user.PasswordHash, &user.FamilyID, &user.OnboardingCompleted, &user.OnboardingStep, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -52,9 +52,9 @@ func (r *UserRepository) FindByEmail(ctx context.Context, email string) (*models
 
 	var user models.User
 	var scannedEmail *string
-	query := `SELECT id, login, email, password_hash, family_id, created_at, updated_at FROM users WHERE lower(email) = lower($1)`
+	query := `SELECT id, login, email, password_hash, family_id, onboarding_completed, onboarding_step, created_at, updated_at FROM users WHERE lower(email) = lower($1)`
 	err := r.pool.QueryRow(ctx, query, email).Scan(
-		&user.ID, &user.Login, &scannedEmail, &user.PasswordHash, &user.FamilyID, &user.CreatedAt, &user.UpdatedAt,
+		&user.ID, &user.Login, &scannedEmail, &user.PasswordHash, &user.FamilyID, &user.OnboardingCompleted, &user.OnboardingStep, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -73,13 +73,13 @@ func (r *UserRepository) FindByLoginOrEmail(ctx context.Context, identifier stri
 	var user models.User
 	var scannedEmail *string
 	query := `
-		SELECT id, login, email, password_hash, family_id, created_at, updated_at 
+		SELECT id, login, email, password_hash, family_id, onboarding_completed, onboarding_step, created_at, updated_at 
 		FROM users 
 		WHERE lower(login) = lower($1) OR lower(email) = lower($1)
 		LIMIT 1
 	`
 	err := r.pool.QueryRow(ctx, query, identifier).Scan(
-		&user.ID, &user.Login, &scannedEmail, &user.PasswordHash, &user.FamilyID, &user.CreatedAt, &user.UpdatedAt,
+		&user.ID, &user.Login, &scannedEmail, &user.PasswordHash, &user.FamilyID, &user.OnboardingCompleted, &user.OnboardingStep, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -97,9 +97,9 @@ func (r *UserRepository) FindByID(ctx context.Context, id uuid.UUID) (*models.Us
 
 	var user models.User
 	var email *string
-	query := `SELECT id, login, email, password_hash, family_id, created_at, updated_at FROM users WHERE id = $1`
+	query := `SELECT id, login, email, password_hash, family_id, onboarding_completed, onboarding_step, created_at, updated_at FROM users WHERE id = $1`
 	err := r.pool.QueryRow(ctx, query, id).Scan(
-		&user.ID, &user.Login, &email, &user.PasswordHash, &user.FamilyID, &user.CreatedAt, &user.UpdatedAt,
+		&user.ID, &user.Login, &email, &user.PasswordHash, &user.FamilyID, &user.OnboardingCompleted, &user.OnboardingStep, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -171,4 +171,111 @@ func (r *UserRepository) UpdateEmail(ctx context.Context, userID uuid.UUID, emai
 	_, err := r.pool.Exec(ctx, query, email, userID)
 	return err
 }
+
+// UpdateOnboarding atualiza o status e a etapa do onboarding do usuário.
+func (r *UserRepository) UpdateOnboarding(ctx context.Context, userID uuid.UUID, completed bool, step int) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	query := `UPDATE users SET onboarding_completed = $1, onboarding_step = $2, updated_at = now() WHERE id = $3`
+	_, err := r.pool.Exec(ctx, query, completed, step, userID)
+	return err
+}
+
+// DeleteAccount executa a exclusão de conta em conformidade com o direito à eliminação da LGPD (Art. 18).
+// Remove os dados pessoais do usuário. Se o usuário for a última conta vinculada à família, remove em cascata
+// transações, contas, tags, mapeamentos, convites, usuários e a própria família.
+// Se houver outros membros na família, transfere a autoria das contas/transações para outro membro e desvincula o usuário.
+func (r *UserRepository) DeleteAccount(ctx context.Context, userID uuid.UUID) error {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Localiza a família do usuário
+	var familyID uuid.UUID
+	err = tx.QueryRow(ctx, `SELECT family_id FROM users WHERE id = $1`, userID).Scan(&familyID)
+	if err != nil {
+		return err
+	}
+
+	// 2. Conta outros usuários ativos vinculados à mesma família
+	var otherUsersCount int
+	err = tx.QueryRow(ctx, `SELECT count(*) FROM users WHERE family_id = $1 AND id != $2`, familyID, userID).Scan(&otherUsersCount)
+	if err != nil {
+		return err
+	}
+
+	// 3. Remove tokens de refresh e vínculos de permissão do usuário
+	if _, err := tx.Exec(ctx, `DELETE FROM refresh_tokens WHERE user_id = $1`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM account_allowed_users WHERE user_id = $1`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE family_invites SET used_by = NULL WHERE used_by = $1`, userID); err != nil {
+		return err
+	}
+
+	if otherUsersCount == 0 {
+		// O usuário é a ÚLTIMA conta vinculada à família: exclusão completa da família e todos os dados
+		if _, err := tx.Exec(ctx, `DELETE FROM transactions WHERE family_id = $1`, familyID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM accounts WHERE family_id = $1`, familyID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM tags WHERE family_id = $1`, familyID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM merchant_mappings WHERE family_id = $1`, familyID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM classifier_states WHERE family_id = $1`, familyID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM family_invites WHERE family_id = $1`, familyID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM family_members WHERE family_id = $1`, familyID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM users WHERE id = $1`, userID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM families WHERE id = $1`, familyID); err != nil {
+			return err
+		}
+	} else {
+		// Há outros membros na família: elege outro membro ativo para assumir autoria dos registros
+		var successorID uuid.UUID
+		err = tx.QueryRow(ctx, `SELECT id FROM users WHERE family_id = $1 AND id != $2 LIMIT 1`, familyID, userID).Scan(&successorID)
+		if err != nil {
+			return err
+		}
+
+		if _, err := tx.Exec(ctx, `UPDATE accounts SET created_by = $1 WHERE created_by = $2 AND family_id = $3`, successorID, userID, familyID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE transactions SET created_by = $1 WHERE created_by = $2 AND family_id = $3`, successorID, userID, familyID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM family_invites WHERE created_by = $1 AND family_id = $2`, userID, familyID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM family_members WHERE family_id = $1 AND user_id = $2`, familyID, userID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM users WHERE id = $1`, userID); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
 

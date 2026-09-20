@@ -7,18 +7,23 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 	"github.com/willGabrielPereira/finager-backend/internal/middleware"
 	"github.com/willGabrielPereira/finager-backend/internal/repository"
 	"github.com/willGabrielPereira/finager-backend/internal/response"
 )
 
 type ProfileResponse struct {
-	UserID     string    `json:"user_id"`
-	Login      string    `json:"login"`
-	Email      string    `json:"email"`
-	FamilyID   string    `json:"family_id"`
-	FamilyName string    `json:"family_name"`
-	CreatedAt  time.Time `json:"created_at"`
+	UserID              string    `json:"user_id"`
+	Login               string    `json:"login"`
+	Email               string    `json:"email"`
+	FamilyID            string    `json:"family_id"`
+	FamilyName          string    `json:"family_name"`
+	Plan                string    `json:"plan"`
+	SubscriptionStatus  string    `json:"subscription_status"`
+	OnboardingCompleted bool      `json:"onboarding_completed"`
+	OnboardingStep      int       `json:"onboarding_step"`
+	CreatedAt           time.Time `json:"created_at"`
 }
 
 type updateProfileRequest struct {
@@ -65,17 +70,25 @@ func (h *ProfileHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 
 	familyName := ""
+	plan := "FREE"
+	subStatus := "ACTIVE"
 	if family, err := h.familyRepo.FindByID(r.Context(), user.FamilyID); err == nil && family != nil {
 		familyName = family.Name
+		plan = family.Plan
+		subStatus = family.SubscriptionStatus
 	}
 
 	response.JSON(w, http.StatusOK, ProfileResponse{
-		UserID:     user.ID.String(),
-		Login:      user.Login,
-		Email:      user.Email,
-		FamilyID:   user.FamilyID.String(),
-		FamilyName: familyName,
-		CreatedAt:  user.CreatedAt,
+		UserID:              user.ID.String(),
+		Login:               user.Login,
+		Email:               user.Email,
+		FamilyID:            user.FamilyID.String(),
+		FamilyName:          familyName,
+		Plan:                plan,
+		SubscriptionStatus:  subStatus,
+		OnboardingCompleted: user.OnboardingCompleted,
+		OnboardingStep:      user.OnboardingStep,
+		CreatedAt:           user.CreatedAt,
 	})
 }
 
@@ -154,19 +167,121 @@ func (h *ProfileHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	familyName := newFamilyName
-	if familyName == "" {
-		if family, err := h.familyRepo.FindByID(r.Context(), user.FamilyID); err == nil && family != nil {
+	plan := "FREE"
+	subStatus := "ACTIVE"
+	if family, err := h.familyRepo.FindByID(r.Context(), user.FamilyID); err == nil && family != nil {
+		if familyName == "" {
 			familyName = family.Name
 		}
+		plan = family.Plan
+		subStatus = family.SubscriptionStatus
 	}
 
 	response.JSON(w, http.StatusOK, ProfileResponse{
-		UserID:     user.ID.String(),
-		Login:      user.Login,
-		Email:      user.Email,
-		FamilyID:   user.FamilyID.String(),
-		FamilyName: familyName,
-		CreatedAt:  user.CreatedAt,
+		UserID:              user.ID.String(),
+		Login:               user.Login,
+		Email:               user.Email,
+		FamilyID:            user.FamilyID.String(),
+		FamilyName:          familyName,
+		Plan:                plan,
+		SubscriptionStatus:  subStatus,
+		OnboardingCompleted: user.OnboardingCompleted,
+		OnboardingStep:      user.OnboardingStep,
+		CreatedAt:           user.CreatedAt,
 	})
 }
+
+type updateOnboardingRequest struct {
+	Completed bool `json:"completed"`
+	Step      int  `json:"step"`
+}
+
+// UpdateOnboarding atualiza o progresso do tutorial/onboarding do usuário.
+// @Summary      Atualizar progresso de onboarding
+// @Tags         profile
+// @Router       /me/onboarding [patch]
+func (h *ProfileHandler) UpdateOnboarding(w http.ResponseWriter, r *http.Request) {
+	claims := middleware.GetClaims(r)
+	if claims == nil {
+		response.Error(w, http.StatusUnauthorized, "E_UNAUTHORIZED", "Não autenticado")
+		return
+	}
+
+	userID, err := uuid.Parse(claims.UserID)
+	if err != nil {
+		response.Error(w, http.StatusUnauthorized, "E_INVALID_SESSION", "Sessão inválida")
+		return
+	}
+
+	var req updateOnboardingRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Error(w, http.StatusBadRequest, "E_INVALID_PAYLOAD", "Payload inválido")
+		return
+	}
+
+	if err := h.userRepo.UpdateOnboarding(r.Context(), userID, req.Completed, req.Step); err != nil {
+		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha ao atualizar onboarding")
+		return
+	}
+
+	response.JSON(w, http.StatusOK, map[string]any{
+		"onboarding_completed": req.Completed,
+		"onboarding_step":      req.Step,
+		"message":              "Progresso de onboarding atualizado com sucesso",
+	})
+}
+
+type deleteAccountRequest struct {
+	Password string `json:"password"`
+}
+
+// Delete remove a conta do usuário e aplica o direito à eliminação da LGPD.
+// @Summary      Excluir conta (LGPD)
+// @Tags         profile
+// @Router       /me [delete]
+func (h *ProfileHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	claims := middleware.GetClaims(r)
+	if claims == nil {
+		response.Error(w, http.StatusUnauthorized, "E_UNAUTHORIZED", "Não autenticado")
+		return
+	}
+
+	userID, err := uuid.Parse(claims.UserID)
+	if err != nil {
+		response.Error(w, http.StatusUnauthorized, "E_INVALID_SESSION", "Sessão inválida")
+		return
+	}
+
+	user, err := h.userRepo.FindByID(r.Context(), userID)
+	if err != nil || user == nil {
+		response.Error(w, http.StatusNotFound, "E_NOT_FOUND", "Usuário não encontrado")
+		return
+	}
+
+	var req deleteAccountRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Error(w, http.StatusBadRequest, "E_INVALID_PAYLOAD", "Informe sua senha atual para confirmar a exclusão")
+		return
+	}
+
+	if strings.TrimSpace(req.Password) == "" {
+		response.Error(w, http.StatusUnprocessableEntity, "E_VALIDATION", "Por favor informe sua senha para confirmar a exclusão")
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		response.Error(w, http.StatusUnauthorized, "E_INVALID_PASSWORD", "Senha incorreta. A exclusão foi cancelada por segurança")
+		return
+	}
+
+	if err := h.userRepo.DeleteAccount(r.Context(), userID); err != nil {
+		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha ao excluir conta: "+err.Error())
+		return
+	}
+
+	response.JSON(w, http.StatusOK, map[string]string{
+		"message": "Sua conta e todos os dados associados foram excluídos com sucesso em conformidade com a LGPD.",
+	})
+}
+
 

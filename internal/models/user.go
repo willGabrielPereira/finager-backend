@@ -13,7 +13,9 @@ type User struct {
 	Login        string    `json:"login"`
 	Email        string    `json:"email"`
 	PasswordHash string    `json:"-"` // never exposed
-	FamilyID     uuid.UUID `json:"family_id"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	FamilyID            uuid.UUID `json:"family_id"`
+	OnboardingCompleted bool      `json:"onboarding_completed"`
+	OnboardingStep      int       `json:"onboarding_step"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }

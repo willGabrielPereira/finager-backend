@@ -20,6 +20,7 @@ type Container struct {
 	ClassifierStates *ClassifierStateRepository
 	MerchantMappings *MerchantMappingRepository
 	Invites          *FamilyInviteRepository
+	Coupons          *CouponRepository
 }
 
 // New cria um container já com todos os repositórios injetados com o banco de dados.
@@ -35,6 +36,7 @@ func New(pool *pgxpool.Pool) *Container {
 		ClassifierStates: NewClassifierStateRepository(pool),
 		MerchantMappings: NewMerchantMappingRepository(pool),
 		Invites:          NewFamilyInviteRepository(pool),
+		Coupons:          NewCouponRepository(pool),
 	}
 }
 
@@ -74,6 +76,26 @@ func (c *Container) EnsureIndexes(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_merchant_mappings_family ON merchant_mappings(family_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_family_invites_token ON family_invites(token)`,
 		`CREATE INDEX IF NOT EXISTS idx_family_invites_family ON family_invites(family_id)`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN NOT NULL DEFAULT false`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_step INT NOT NULL DEFAULT 0`,
+		`ALTER TABLE families ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT 'FREE'`,
+		`ALTER TABLE families ADD COLUMN IF NOT EXISTS subscription_status TEXT NOT NULL DEFAULT 'ACTIVE'`,
+		`ALTER TABLE families ADD COLUMN IF NOT EXISTS subscription_expires_at TIMESTAMPTZ`,
+		`ALTER TABLE families ADD COLUMN IF NOT EXISTS subscription_provider TEXT`,
+		`ALTER TABLE families ADD COLUMN IF NOT EXISTS external_subscription_id TEXT`,
+		`CREATE INDEX IF NOT EXISTS idx_families_plan ON families(plan)`,
+		`CREATE TABLE IF NOT EXISTS coupons (
+			id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			code             TEXT NOT NULL UNIQUE,
+			discount_percent INT NOT NULL,
+			plan_granted     TEXT NOT NULL DEFAULT 'PRO',
+			max_uses         INT,
+			times_used       INT NOT NULL DEFAULT 0,
+			expires_at       TIMESTAMPTZ,
+			created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_coupons_code ON coupons(lower(code))`,
+		`INSERT INTO coupons (code, discount_percent, plan_granted) VALUES ('AMIGO100', 100, 'LIFETIME_FREE') ON CONFLICT (code) DO NOTHING`,
 	}
 
 	for _, q := range queries {
