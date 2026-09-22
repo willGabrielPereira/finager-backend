@@ -2,8 +2,7 @@
 /finager
 
 # Swagger docs (generated — run: swag init -g cmd/api/main.go --output docs)
-docs/*
-!docs/*.md
+docs/
 
 # Environment files (never commit secrets)
 .env

@@ -1,4 +1,4 @@
-.PHONY: docs build run seed seed-tags migrate migrate-status up down clean fresh reset-transactions
+.PHONY: docs build run seed seed-tags migrate migrate-status up down clean fresh reset-transactions test
 
 ## docs: Regenera a documentação Swagger a partir das anotações nos handlers
 docs:
@@ -46,3 +46,7 @@ fresh: clean up
 ## reset-transactions: Apaga TODAS as transações e o estado do classificador de IA (preserva usuários, família, contas e tags)
 reset-transactions:
 	go run ./cmd/reset
+
+## test: Executa toda a suíte de testes (requer Docker para os testes de integração)
+test:
+	go test ./...
