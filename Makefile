@@ -1,4 +1,4 @@
-.PHONY: docs build run seed seed-tags migrate migrate-status up down clean fresh reset-transactions test
+.PHONY: docs build run seed seed-tags migrate migrate-status up down clean fresh reset-transactions reset-password test
 
 ## docs: Regenera a documentação Swagger a partir das anotações nos handlers
 docs:
@@ -46,6 +46,10 @@ fresh: clean up
 ## reset-transactions: Apaga TODAS as transações e o estado do classificador de IA (preserva usuários, família, contas e tags)
 reset-transactions:
 	go run ./cmd/reset
+
+## reset-password: Reseta manualmente a senha de um usuário (login ou email) — uso: make reset-password ID=<login_ou_email> PASSWORD=<nova_senha_opcional>
+reset-password:
+	go run ./cmd/resetpassword $(ID) $(PASSWORD)
 
 ## test: Executa toda a suíte de testes (requer Docker para os testes de integração)
 test:
