@@ -13,12 +13,14 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/getsentry/sentry-go"
 
 	_ "github.com/willGabrielPereira/finager-backend/docs" // gerado pelo swag init
 
@@ -30,16 +32,32 @@ import (
 )
 
 func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+
 	// ── Configuração ──────────────────────────────────────────────────────────
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Configuration error: %v", err)
+		logger.Error("erro de configuração", "err", err)
+		os.Exit(1)
+	}
+
+	// ── Sentry (error tracking) — no-op se SENTRY_DSN não estiver definido ─────
+	if cfg.SentryDSN != "" {
+		if err := sentry.Init(sentry.ClientOptions{
+			Dsn:         cfg.SentryDSN,
+			Environment: cfg.AppEnv,
+		}); err != nil {
+			logger.Error("falha ao inicializar sentry", "err", err)
+		}
+		defer sentry.Flush(2 * time.Second)
 	}
 
 	// ── Banco de dados ────────────────────────────────────────────────────────
 	db, err := database.Connect(cfg.DatabaseDSN)
 	if err != nil {
-		log.Fatalf("Falha ao conectar no PostgreSQL: %v", err)
+		logger.Error("falha ao conectar no PostgreSQL", "err", err)
+		os.Exit(1)
 	}
 	defer db.Close()
 
@@ -51,7 +69,8 @@ func main() {
 	defer cancelStartup()
 
 	if err := repos.EnsureIndexes(startupCtx); err != nil {
-		log.Fatalf("Failed to create database indexes: %v", err)
+		logger.Error("falha ao criar índices do banco", "err", err)
+		os.Exit(1)
 	}
 
 	// ── Serviço de Auth ───────────────────────────────────────────────────────
@@ -61,9 +80,10 @@ func main() {
 	mux := http.NewServeMux()
 	registerRoutes(mux, repos, authSvc, cfg.JWTRefreshExpiresHours)
 
-	// ── Middlewares globais (Security e CORS) ─────────────────────────────────
+	// ── Middlewares globais (Security, CORS e Logging/Sentry) ──────────────────
 	rootHandler := middleware.SecurityHeaders(mux)
 	rootHandler = middleware.CORS(cfg.CORSAllowedOrigins)(rootHandler)
+	rootHandler = middleware.RequestLogger(logger)(rootHandler)
 
 	// ── Servidor HTTP ─────────────────────────────────────────────────────────
 	srv := &http.Server{
@@ -75,9 +95,10 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("Finager API listening on port %s", cfg.Port)
+		logger.Info("Finager API listening", "port", cfg.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server error: %v", err)
+			logger.Error("server error", "err", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -86,12 +107,13 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("Shutting down server...")
+	logger.Info("shutting down server...")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatalf("Forced shutdown: %v", err)
+		logger.Error("forced shutdown", "err", err)
+		os.Exit(1)
 	}
-	log.Println("Server stopped.")
+	logger.Info("server stopped")
 }

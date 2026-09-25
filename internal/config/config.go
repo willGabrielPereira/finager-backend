@@ -19,6 +19,8 @@ type Config struct {
 	JWTExpiresHours        int
 	JWTRefreshExpiresHours int
 	CORSAllowedOrigins     []string
+	SentryDSN              string
+	AppEnv                 string
 }
 
 // Load reads the .env file (if present) and returns a populated Config.
@@ -37,6 +39,8 @@ func Load() (*Config, error) {
 		JWTExpiresHours:        getEnvInt("JWT_EXPIRATION_HOURS", 1),
 		JWTRefreshExpiresHours: getEnvInt("JWT_REFRESH_EXPIRATION_HOURS", 168), // 7 days
 		CORSAllowedOrigins:     getEnvSlice("CORS_ALLOWED_ORIGINS", []string{"*"}), // Defaults to *
+		SentryDSN:              getEnv("SENTRY_DSN", ""),
+		AppEnv:                 getEnv("APP_ENV", "development"),
 	}
 
 	if err := cfg.validate(); err != nil {

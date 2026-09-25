@@ -17,3 +17,7 @@ docs/
 # OS artifacts
 .DS_Store
 Thumbs.db
+
+# oh-my-claudecode runtime state (skills are the intentional committable exception)
+.omc/*
+!.omc/skills/
