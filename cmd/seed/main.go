@@ -7,6 +7,12 @@
 //	USER1_LOGIN, USER1_PASSWORD
 //	USER2_LOGIN, USER2_PASSWORD
 //	SEED_FAMILY_NAME  (opcional, default: "Família Principal")
+//	ADMIN_LOGIN, ADMIN_EMAIL  (opcionais — se ADMIN_LOGIN estiver definido, cria/promove
+//	                           esse usuário para role=admin numa família própria, separada
+//	                           da família de teste, para não consumir uma vaga do limite
+//	                           de membros do plano FREE. A senha usa o hash bcrypt fixo
+//	                           em adminPasswordHash abaixo, não uma variável de ambiente.)
+//	ADMIN_FAMILY_NAME         (opcional, default: "Administração")
 //
 // O script é idempotente: pode ser executado múltiplas vezes sem criar duplicatas.
 package main
@@ -23,6 +29,12 @@ import (
 	"github.com/willGabrielPereira/finager-backend/internal/database"
 	"github.com/willGabrielPereira/finager-backend/internal/repository"
 )
+
+// adminPasswordHash é o hash bcrypt (não reversível) da senha real do usuário admin,
+// copiado diretamente do banco. Fixo aqui de propósito para que um reset completo do
+// banco recrie o usuário administrativo com a MESMA senha, sem depender de guardar a
+// senha em texto puro em lugar nenhum.
+const adminPasswordHash = "$2a$12$1tIESc7F1jSKALP9bxXks.Ihy5bO1BoUOshdTRL3EDuXwF66DerVS"
 
 func main() {
 	if err := godotenv.Load(); err != nil {
@@ -95,6 +107,22 @@ func main() {
 
 	privAcc := ensureAccount(ctx, repos.Accounts, "Conta Privada "+user1.Login, "Itaú", family.ID, user1.ID, []uuid.UUID{user1.ID})
 	log.Printf("✓ Private Acc : %q (id: %s)", privAcc.Name, privAcc.ID.String())
+
+	// ── Admin (opcional) ────────────────────────────────────────────────────────
+	if adminLogin := getEnv("ADMIN_LOGIN", ""); adminLogin != "" {
+		adminEmail := getEnv("ADMIN_EMAIL", "")
+		adminFamilyName := getEnv("ADMIN_FAMILY_NAME", "Administração")
+
+		adminFamily := ensureFamily(ctx, repos.Families, adminFamilyName)
+		admin := ensureUserWithHash(ctx, repos.Users, adminLogin, adminEmail, adminPasswordHash, adminFamily.ID)
+		if err := repos.Families.AddMember(ctx, adminFamily.ID, admin.ID); err != nil {
+			log.Fatalf("AddMember admin: %v", err)
+		}
+		if err := repos.Users.UpdateRole(ctx, admin.ID, "admin"); err != nil {
+			log.Fatalf("UpdateRole admin: %v", err)
+		}
+		log.Printf("✓ Admin       : %q promovido a role=admin (id: %s)", admin.Login, admin.ID.String())
+	}
 
 	log.Println("✓ Seed completed successfully.")
 }

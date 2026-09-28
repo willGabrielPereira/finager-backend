@@ -30,7 +30,7 @@ migrate-status:
 
 ## up: Sobe o ambiente completo via Docker Compose
 up:
-	docker compose up --build
+	docker compose up --build -d
 
 ## down: Para os containers do Docker Compose
 down:

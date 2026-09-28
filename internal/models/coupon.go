@@ -15,5 +15,6 @@ type Coupon struct {
 	MaxUses         *int       `json:"max_uses,omitempty"`
 	TimesUsed       int        `json:"times_used"`
 	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
+	Active          bool       `json:"active"`
 	CreatedAt       time.Time  `json:"created_at"`
 }

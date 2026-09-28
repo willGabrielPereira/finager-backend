@@ -21,6 +21,10 @@ func registerRoutes(
 	authSvc *auth.Service,
 	jwtRefreshExpiresHours int,
 ) {
+	// elevateLimiter é por usuário (não por IP como o loginLimiter), então precisa
+	// da sua própria instância — reaproveitar o loginLimiter misturaria as duas chaves.
+	elevateLimiter := middleware.NewInMemoryRateLimiter(10, 15*time.Minute)
+
 	authHandler := auth.NewHandler(
 		authSvc,
 		repos.Users,
@@ -28,7 +32,9 @@ func registerRoutes(
 		repos.RefreshTokens,
 		repos.Blocklist,
 		repos.Invites,
+		repos.SignupInvites,
 		jwtRefreshExpiresHours,
+		elevateLimiter,
 	)
 
 	authMid := middleware.Authenticate(authSvc, repos.Blocklist)
@@ -46,6 +52,14 @@ func registerRoutes(
 	aiHandler := handlers.NewAIHandler(repos.Transactions, repos.Tags, repos.ClassifierStates, repos.MerchantMappings)
 	profileHandler := handlers.NewProfileHandler(repos.Users, repos.Families)
 	familyHandler := handlers.NewFamilyHandler(repos.Families, repos.Invites, repos.Users, billingSvc)
+	adminHandler := handlers.NewAdminHandler(repos.Users, repos.Coupons, repos.SignupInvites)
+
+	// Moderador e admin podem ver estatísticas, listar admins/moderadores e gerenciar convites.
+	adminOrModMid := middleware.RequireRole(repos.Users, "admin", "moderator")
+	// Só admin pode promover/rebaixar usuários e gerenciar cupons.
+	adminOnlyMid := middleware.RequireRole(repos.Users, "admin")
+	// Exige reautenticação recente (step-up) além do papel, em todas as rotas /admin/*.
+	elevatedMid := middleware.RequireElevated(authSvc, repos.Blocklist)
 
 	// ── Públicas ──────────────────────────────────────────────────────────────
 	mux.HandleFunc("GET /health", handlers.HealthHandler)
@@ -61,6 +75,7 @@ func registerRoutes(
 	// ── Auth — autenticadas ───────────────────────────────────────────────────
 	mux.Handle("POST /auth/logout", authMid(http.HandlerFunc(authHandler.Logout)))
 	mux.Handle("PUT /auth/password", authMid(http.HandlerFunc(authHandler.ChangePassword)))
+	mux.Handle("POST /auth/elevate", authMid(http.HandlerFunc(authHandler.Elevate)))
 
 	// ── Perfil do Usuário & LGPD ──────────────────────────────────────────────
 	mux.Handle("GET /me", authMid(http.HandlerFunc(profileHandler.Get)))
@@ -107,4 +122,16 @@ func registerRoutes(
 	mux.Handle("POST /accounts", authMid(http.HandlerFunc(accHandler.Create)))
 	mux.Handle("PUT /accounts/{id}", authMid(http.HandlerFunc(accHandler.Update)))
 	mux.Handle("DELETE /accounts/{id}", authMid(http.HandlerFunc(accHandler.Delete)))
+
+	// ── Administração ─────────────────────────────────────────────────────────
+	mux.Handle("GET /admin/stats/overview", authMid(adminOrModMid(elevatedMid(http.HandlerFunc(adminHandler.Overview)))))
+	mux.Handle("GET /admin/stats/activity", authMid(adminOrModMid(elevatedMid(http.HandlerFunc(adminHandler.Activity)))))
+	mux.Handle("GET /admin/users", authMid(adminOrModMid(elevatedMid(http.HandlerFunc(adminHandler.ListAdmins)))))
+	mux.Handle("PATCH /admin/users/{id}/role", authMid(adminOnlyMid(elevatedMid(http.HandlerFunc(adminHandler.UpdateUserRole)))))
+	mux.Handle("POST /admin/invites", authMid(adminOrModMid(elevatedMid(http.HandlerFunc(adminHandler.CreateInvite)))))
+	mux.Handle("GET /admin/invites", authMid(adminOrModMid(elevatedMid(http.HandlerFunc(adminHandler.ListInvites)))))
+	mux.Handle("DELETE /admin/invites/{id}", authMid(adminOrModMid(elevatedMid(http.HandlerFunc(adminHandler.RevokeInvite)))))
+	mux.Handle("GET /admin/coupons", authMid(adminOnlyMid(elevatedMid(http.HandlerFunc(adminHandler.ListCoupons)))))
+	mux.Handle("POST /admin/coupons", authMid(adminOnlyMid(elevatedMid(http.HandlerFunc(adminHandler.CreateCoupon)))))
+	mux.Handle("PATCH /admin/coupons/{id}", authMid(adminOnlyMid(elevatedMid(http.HandlerFunc(adminHandler.UpdateCoupon)))))
 }

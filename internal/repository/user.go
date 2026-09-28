@@ -97,9 +97,9 @@ func (r *UserRepository) FindByID(ctx context.Context, id uuid.UUID) (*models.Us
 
 	var user models.User
 	var email *string
-	query := `SELECT id, login, email, password_hash, family_id, onboarding_completed, onboarding_step, created_at, updated_at FROM users WHERE id = $1`
+	query := `SELECT id, login, email, password_hash, family_id, onboarding_completed, onboarding_step, role, last_login_at, created_at, updated_at FROM users WHERE id = $1`
 	err := r.pool.QueryRow(ctx, query, id).Scan(
-		&user.ID, &user.Login, &email, &user.PasswordHash, &user.FamilyID, &user.OnboardingCompleted, &user.OnboardingStep, &user.CreatedAt, &user.UpdatedAt,
+		&user.ID, &user.Login, &email, &user.PasswordHash, &user.FamilyID, &user.OnboardingCompleted, &user.OnboardingStep, &user.Role, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -278,4 +278,164 @@ func (r *UserRepository) DeleteAccount(ctx context.Context, userID uuid.UUID) er
 	return tx.Commit(ctx)
 }
 
+// CountByPlan retorna a contagem de usuários agrupados pelo plano da família a que pertencem.
+func (r *UserRepository) CountByPlan(ctx context.Context) (map[string]int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 
+	query := `
+		SELECT families.plan, COUNT(*)
+		FROM users
+		JOIN families ON users.family_id = families.id
+		GROUP BY families.plan
+	`
+	rows, err := r.pool.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]int)
+	for rows.Next() {
+		var plan string
+		var count int
+		if err := rows.Scan(&plan, &count); err != nil {
+			return nil, err
+		}
+		result[plan] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// UserActivity representa dados agregados de atividade de um usuário (último login e última transação da família).
+type UserActivity struct {
+	UserID            uuid.UUID  `json:"user_id"`
+	Login             string     `json:"login"`
+	Email             string     `json:"email"`
+	FamilyID          uuid.UUID  `json:"family_id"`
+	LastLoginAt       *time.Time `json:"last_login_at,omitempty"`
+	LastTransactionAt *time.Time `json:"last_transaction_at,omitempty"`
+}
+
+// ListActivity retorna usuários paginados com dados de último login e última transação da família,
+// ordenados pela atividade mais recente (o maior entre last_login_at e last_transaction_at).
+func (r *UserRepository) ListActivity(ctx context.Context, page, limit int) ([]UserActivity, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	offset := (page - 1) * limit
+
+	var total int
+	if err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM users`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	query := `
+		SELECT u.id, u.login, u.email, u.family_id, u.last_login_at, lt.last_transaction_at
+		FROM users u
+		LEFT JOIN LATERAL (
+			SELECT MAX(t.date_posted) AS last_transaction_at
+			FROM transactions t
+			WHERE t.family_id = u.family_id
+		) lt ON true
+		ORDER BY GREATEST(u.last_login_at, lt.last_transaction_at) DESC NULLS LAST
+		LIMIT $1 OFFSET $2
+	`
+	rows, err := r.pool.Query(ctx, query, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var activities []UserActivity
+	for rows.Next() {
+		var a UserActivity
+		var email *string
+		if err := rows.Scan(&a.UserID, &a.Login, &email, &a.FamilyID, &a.LastLoginAt, &a.LastTransactionAt); err != nil {
+			return nil, 0, err
+		}
+		if email != nil {
+			a.Email = *email
+		}
+		activities = append(activities, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return activities, total, nil
+}
+
+// UpdateRole atualiza o papel (role) do usuário.
+func (r *UserRepository) UpdateRole(ctx context.Context, userID uuid.UUID, role string) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	query := `UPDATE users SET role = $1, updated_at = now() WHERE id = $2`
+	_, err := r.pool.Exec(ctx, query, role, userID)
+	return err
+}
+
+// UpdateLastLogin atualiza o timestamp de último login do usuário para agora.
+func (r *UserRepository) UpdateLastLogin(ctx context.Context, userID uuid.UUID) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	query := `UPDATE users SET last_login_at = now() WHERE id = $1`
+	_, err := r.pool.Exec(ctx, query, userID)
+	return err
+}
+
+// ListByRole retorna os usuários cujo role esteja entre os informados.
+func (r *UserRepository) ListByRole(ctx context.Context, roles []string) ([]models.User, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	query := `
+		SELECT id, login, email, password_hash, family_id, onboarding_completed, onboarding_step, role, last_login_at, created_at, updated_at
+		FROM users
+		WHERE role = ANY($1)
+	`
+	rows, err := r.pool.Query(ctx, query, roles)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []models.User
+	for rows.Next() {
+		var user models.User
+		var email *string
+		if err := rows.Scan(
+			&user.ID, &user.Login, &email, &user.PasswordHash, &user.FamilyID, &user.OnboardingCompleted, &user.OnboardingStep, &user.Role, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if email != nil {
+			user.Email = *email
+		}
+		users = append(users, user)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+// CountAdmins retorna o número de usuários com role 'admin'.
+func (r *UserRepository) CountAdmins(ctx context.Context) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var count int
+	err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE role = 'admin'`).Scan(&count)
+	return count, err
+}

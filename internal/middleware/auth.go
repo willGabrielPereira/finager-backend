@@ -3,6 +3,7 @@ package middleware
 import (
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/willGabrielPereira/finager-backend/internal/auth"
@@ -39,6 +40,14 @@ func Authenticate(svc *auth.Service, blocklist *repository.BlocklistRepository) 
 			if err != nil {
 				w.WriteHeader(http.StatusUnauthorized)
 				_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid or expired token"})
+				return
+			}
+
+			// Token elevado (audiência "admin") é de uso exclusivo do fluxo de
+			// step-up auth administrativo e não pode servir como token de sessão comum.
+			if slices.Contains(claims.Audience, "admin") {
+				w.WriteHeader(http.StatusUnauthorized)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "token elevado não pode ser usado como token de sessão"})
 				return
 			}
 

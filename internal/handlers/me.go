@@ -23,6 +23,7 @@ type ProfileResponse struct {
 	SubscriptionStatus  string    `json:"subscription_status"`
 	OnboardingCompleted bool      `json:"onboarding_completed"`
 	OnboardingStep      int       `json:"onboarding_step"`
+	Role                string    `json:"role"`
 	CreatedAt           time.Time `json:"created_at"`
 }
 
@@ -88,6 +89,7 @@ func (h *ProfileHandler) Get(w http.ResponseWriter, r *http.Request) {
 		SubscriptionStatus:  subStatus,
 		OnboardingCompleted: user.OnboardingCompleted,
 		OnboardingStep:      user.OnboardingStep,
+		Role:                user.Role,
 		CreatedAt:           user.CreatedAt,
 	})
 }
@@ -187,6 +189,7 @@ func (h *ProfileHandler) Update(w http.ResponseWriter, r *http.Request) {
 		SubscriptionStatus:  subStatus,
 		OnboardingCompleted: user.OnboardingCompleted,
 		OnboardingStep:      user.OnboardingStep,
+		Role:                user.Role,
 		CreatedAt:           user.CreatedAt,
 	})
 }

@@ -18,6 +18,7 @@ var (
 	ErrCouponNotFound      = errors.New("cupom inválido ou não encontrado")
 	ErrCouponExpired       = errors.New("este cupom já expirou")
 	ErrCouponMaxUses       = errors.New("este cupom já atingiu o limite máximo de utilizações")
+	ErrCouponInactive      = errors.New("este cupom está desativado")
 )
 
 // FamilyPlanStatus agrega o plano, as limitações e o consumo atual de recursos.
@@ -137,6 +138,10 @@ func (s *Service) ApplyCoupon(ctx context.Context, familyID uuid.UUID, code stri
 	coupon, err := s.couponRepo.FindByCode(ctx, code)
 	if err != nil {
 		return nil, ErrCouponNotFound
+	}
+
+	if !coupon.Active {
+		return nil, ErrCouponInactive
 	}
 
 	if coupon.ExpiresAt != nil && coupon.ExpiresAt.Before(time.Now()) {

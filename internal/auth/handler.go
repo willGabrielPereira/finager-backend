@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -51,12 +52,24 @@ type changePasswordRequest struct {
 	NewPassword     string `json:"new_password"`
 }
 
+type elevateRequest struct {
+	Password string `json:"password"`
+}
+
 // errorResponse is returned on any failure.
 type errorResponse struct {
 	Error string `json:"error"`
 }
 
 // — Handler ────────────────────────────────────────────────────────────────────
+
+// rateLimiter é o subconjunto de middleware.RateLimiter que o Handler precisa.
+// Definido aqui (em vez de importar internal/middleware) porque middleware já
+// importa internal/auth — importar middleware de volta criaria um ciclo.
+// middleware.InMemoryRateLimiter satisfaz esta interface estruturalmente.
+type rateLimiter interface {
+	Allow(key string) bool
+}
 
 // Handler holds dependencies needed by auth HTTP handlers.
 type Handler struct {
@@ -66,7 +79,9 @@ type Handler struct {
 	refreshRepo      *repository.RefreshTokenRepository
 	blocklistRepo    *repository.BlocklistRepository
 	inviteRepo       *repository.FamilyInviteRepository
+	signupInviteRepo *repository.SignupInviteRepository
 	refreshExpiresIn time.Duration
+	elevateLimiter   rateLimiter
 }
 
 // NewHandler creates an auth Handler with all required dependencies.
@@ -77,7 +92,9 @@ func NewHandler(
 	refreshRepo *repository.RefreshTokenRepository,
 	blocklistRepo *repository.BlocklistRepository,
 	inviteRepo *repository.FamilyInviteRepository,
+	signupInviteRepo *repository.SignupInviteRepository,
 	refreshExpiresHours int,
+	elevateLimiter rateLimiter,
 ) *Handler {
 	return &Handler{
 		service:          svc,
@@ -86,7 +103,9 @@ func NewHandler(
 		refreshRepo:      refreshRepo,
 		blocklistRepo:    blocklistRepo,
 		inviteRepo:       inviteRepo,
+		signupInviteRepo: signupInviteRepo,
 		refreshExpiresIn: time.Duration(refreshExpiresHours) * time.Hour,
+		elevateLimiter:   elevateLimiter,
 	}
 }
 
@@ -132,33 +151,79 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Verifica convite se fornecido
+	// 3. Verifica convite se fornecido.
+	// O campo invite_token é compartilhado por dois tipos de convite:
+	//   - FamilyInvite: convite para ENTRAR em uma família já existente (comportamento
+	//     original, mantido idêntico abaixo).
+	//   - SignupInvite: convite administrativo que CONCEDE um plano (ex.: LIFETIME_FREE)
+	//     à família NOVA criada neste cadastro.
+	// Tenta primeiro como convite de família; se o token não corresponder a nenhum,
+	// tenta como convite de cadastro.
+	//
+	// Para o SignupInvite, a reivindicação (ClaimByToken) acontece AQUI — antes de criar
+	// qualquer família/usuário — em vez de só no fim do fluxo. Isso fecha dois bugs que a
+	// ordem antiga (criar família + usuário, marcar convite usado só no final) permitia:
+	//   (a) fail-open: se marcar-como-usado falhasse por um motivo transitório (timeout,
+	//       erro de conexão) no final, o cadastro já tinha sido concluído mesmo assim e o
+	//       token continuava reutilizável indefinidamente;
+	//   (b) conta órfã: em duas requisições concorrentes com o mesmo token, a que perdesse
+	//       a corrida só descobriria isso DEPOIS de já ter criado usuário e família no banco.
+	// Reivindicando primeiro (com uma condição atômica no UPDATE), nenhuma linha de
+	// usuário/família é criada antes de sabermos que o convite é legitimamente nosso.
 	var targetFamilyID uuid.UUID
 	var invite *models.FamilyInvite
+	var signupInvite *models.SignupInvite
 	if req.InviteToken != "" {
 		inv, err := h.inviteRepo.FindByToken(r.Context(), req.InviteToken)
-		if err != nil || inv == nil {
-			response.Validations(w, response.ValidationError{Field: "invite_token", Rule: "invalid", Message: "Código de convite não encontrado ou inválido"})
-			return
+		if err == nil && inv != nil {
+			if inv.UsedAt != nil {
+				response.Validations(w, response.ValidationError{Field: "invite_token", Rule: "used", Message: "Este convite já foi utilizado"})
+				return
+			}
+			if inv.ExpiresAt.Before(time.Now()) {
+				response.Validations(w, response.ValidationError{Field: "invite_token", Rule: "expired", Message: "Este convite expirou"})
+				return
+			}
+			if inv.TargetEmail != nil && *inv.TargetEmail != "" && !strings.EqualFold(*inv.TargetEmail, req.Email) {
+				response.Validations(w, response.ValidationError{
+					Field:   "email",
+					Rule:    "mismatch",
+					Message: "Este convite foi emitido exclusivamente para o e-mail: " + *inv.TargetEmail,
+				})
+				return
+			}
+			invite = inv
+			targetFamilyID = inv.FamilyID
+		} else {
+			claimed, claimErr := h.signupInviteRepo.ClaimByToken(r.Context(), req.InviteToken)
+			if claimErr != nil {
+				response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha interna ao validar convite de cadastro")
+				return
+			}
+			if claimed == nil {
+				// Não conseguiu reivindicar (token inexistente, já usado ou expirado):
+				// nenhuma linha de usuário/família foi tocada. Busca o convite de novo só
+				// para determinar qual das três mensagens específicas devolver ao cliente.
+				si, siErr := h.signupInviteRepo.GetByToken(r.Context(), req.InviteToken)
+				if siErr != nil || si == nil {
+					response.Validations(w, response.ValidationError{Field: "invite_token", Rule: "invalid", Message: "Código de convite não encontrado ou inválido"})
+					return
+				}
+				if si.UsedAt != nil {
+					response.Validations(w, response.ValidationError{Field: "invite_token", Rule: "used", Message: "Este convite já foi utilizado"})
+					return
+				}
+				if time.Now().After(si.ExpiresAt) {
+					response.Validations(w, response.ValidationError{Field: "invite_token", Rule: "expired", Message: "Este convite expirou"})
+					return
+				}
+				// Estado mudou entre o claim e esta checagem (ex.: outra requisição
+				// reivindicou no meio-tempo): trata como inválido por segurança.
+				response.Validations(w, response.ValidationError{Field: "invite_token", Rule: "invalid", Message: "Código de convite não encontrado ou inválido"})
+				return
+			}
+			signupInvite = claimed
 		}
-		if inv.UsedAt != nil {
-			response.Validations(w, response.ValidationError{Field: "invite_token", Rule: "used", Message: "Este convite já foi utilizado"})
-			return
-		}
-		if inv.ExpiresAt.Before(time.Now()) {
-			response.Validations(w, response.ValidationError{Field: "invite_token", Rule: "expired", Message: "Este convite expirou"})
-			return
-		}
-		if inv.TargetEmail != nil && *inv.TargetEmail != "" && !strings.EqualFold(*inv.TargetEmail, req.Email) {
-			response.Validations(w, response.ValidationError{
-				Field:   "email",
-				Rule:    "mismatch",
-				Message: "Este convite foi emitido exclusivamente para o e-mail: " + *inv.TargetEmail,
-			})
-			return
-		}
-		invite = inv
-		targetFamilyID = inv.FamilyID
 	}
 
 	// 4. Hash Password
@@ -168,7 +233,8 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 5. Família: se não veio por convite, cria uma nova família
+	// 5. Família: se não veio por convite de família, cria uma nova família
+	// (com o plano concedido pelo convite de cadastro, se houver; senão o padrão FREE).
 	if invite == nil {
 		fname := req.FamilyName
 		if fname == "" {
@@ -179,7 +245,19 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 			Name:      fname,
 			MemberIDs: []uuid.UUID{},
 		}
+		if signupInvite != nil {
+			family.Plan = signupInvite.PlanGranted
+		}
 		if err := h.familyRepo.Create(r.Context(), family); err != nil {
+			// O convite de cadastro (se houver) já foi reivindicado no passo 3, antes de
+			// chegarmos aqui. Se a criação da família falhar agora por um motivo
+			// transitório não relacionado ao convite, devolve a reivindicação — senão um
+			// convite válido seria desperdiçado por um erro que nada tem a ver com ele.
+			if signupInvite != nil {
+				if relErr := h.signupInviteRepo.ReleaseClaim(r.Context(), signupInvite.ID); relErr != nil {
+					log.Printf("Aviso: falha ao liberar reivindicação do convite de cadastro %s após erro na criação da família: %v", signupInvite.ID, relErr)
+				}
+			}
 			response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha ao alocar espaço familiar")
 			return
 		}
@@ -194,6 +272,13 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		FamilyID:     targetFamilyID,
 	}
 	if err := h.userRepo.Create(r.Context(), user); err != nil {
+		// Mesmo raciocínio do passo 5: libera a reivindicação antes de devolver o erro,
+		// para não desperdiçar um convite válido por uma falha transitória na criação do usuário.
+		if signupInvite != nil {
+			if relErr := h.signupInviteRepo.ReleaseClaim(r.Context(), signupInvite.ID); relErr != nil {
+				log.Printf("Aviso: falha ao liberar reivindicação do convite de cadastro %s após erro na criação do usuário: %v", signupInvite.ID, relErr)
+			}
+		}
 		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha ao alocar registro de usuário: "+err.Error())
 		return
 	}
@@ -201,9 +286,18 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	// 7. Cadastra ele como membro da família
 	_ = h.familyRepo.AddMember(r.Context(), targetFamilyID, user.ID)
 
-	// 8. Se usou convite, marca como utilizado
+	// 8. Se usou convite de família, marca como utilizado
 	if invite != nil {
 		_ = h.inviteRepo.MarkAsUsed(r.Context(), invite.ID, user.ID)
+	}
+	// Se usou convite de cadastro, a reivindicação de segurança já aconteceu no
+	// ClaimByToken (passo 3) — o token já está marcado como usado e não pode ser
+	// reaproveitado. Aqui só registramos qual família o usou, para auditoria; se isso
+	// falhar, é apenas cosmético (não deixa o convite reutilizável), então só logamos.
+	if signupInvite != nil {
+		if err := h.signupInviteRepo.SetUsedFamily(r.Context(), signupInvite.ID, targetFamilyID); err != nil {
+			log.Printf("Aviso: falha ao registrar família %s no convite de cadastro %s: %v", targetFamilyID, signupInvite.ID, err)
+		}
 	}
 
 	// 9. Devolve Autenticado
@@ -253,6 +347,11 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(errorResponse{Error: "Não foi possível gerar tokens de autenticação"})
 		return
+	}
+
+	// Registra o último login. Não-fatal: falhar aqui não deve impedir o login.
+	if err := h.userRepo.UpdateLastLogin(r.Context(), user.ID); err != nil {
+		log.Printf("Aviso: falha ao atualizar last_login_at do usuário %s: %v", user.ID, err)
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -336,6 +435,16 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 				tokenHash := h.service.HashToken(rawToken)
 				_ = h.blocklistRepo.Add(r.Context(), tokenHash, claims.ExpiresAt.Time)
 			}
+		}
+	}
+
+	// Se o cliente também tinha um token elevado (step-up admin) ativo, blocklista-o
+	// também — mesmo padrão acima. Header ausente: nenhuma mudança de comportamento
+	// para quem nunca usou a área admin.
+	if elevatedToken := r.Header.Get("X-Admin-Elevation"); elevatedToken != "" {
+		if claims, err := h.service.ValidateToken(elevatedToken); err == nil && claims.ExpiresAt != nil {
+			tokenHash := h.service.HashToken(elevatedToken)
+			_ = h.blocklistRepo.Add(r.Context(), tokenHash, claims.ExpiresAt.Time)
 		}
 	}
 
@@ -434,6 +543,82 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	_ = h.refreshRepo.RevokeAllByUser(r.Context(), userID)
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// Elevate handles POST /auth/elevate — step-up auth: reautentica com a senha atual
+// e emite um token de curta duração (audiência "admin") exigido pelas rotas /admin/*
+// além do papel do usuário. Não concede papel nenhum, só prova identidade recente.
+//
+// @Summary      Reautenticação step-up
+// @Description  Reautentica o usuário autenticado com a senha atual e emite um token elevado de curta duração (15 min, audiência "admin") exigido pelas rotas administrativas.
+// @Tags         auth
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        body  body  elevateRequest  true  "Senha atual"
+// @Success      200   {object}  map[string]interface{}
+// @Failure      400   {object}  errorResponse
+// @Failure      401   {object}  errorResponse
+// @Failure      403   {object}  errorResponse
+// @Failure      429   {object}  errorResponse
+// @Failure      500   {object}  errorResponse
+// @Router       /auth/elevate [post]
+func (h *Handler) Elevate(w http.ResponseWriter, r *http.Request) {
+	claims := GetClaims(r)
+	if claims == nil {
+		response.Error(w, http.StatusUnauthorized, "E_UNAUTHORIZED", "não autenticado")
+		return
+	}
+
+	var req elevateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Error(w, http.StatusBadRequest, "E_INVALID_PAYLOAD", "payload inválido")
+		return
+	}
+
+	userID, err := uuid.Parse(claims.UserID)
+	if err != nil {
+		response.Error(w, http.StatusUnauthorized, "E_UNAUTHORIZED", "não autenticado")
+		return
+	}
+
+	user, err := h.userRepo.FindByID(r.Context(), userID)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "erro interno")
+		return
+	}
+
+	// Papel insuficiente: retorna ANTES do rate limit e do bcrypt — não vale gastar
+	// tentativa de rate limit nem o custo/timing do bcrypt em quem nunca teria acesso.
+	// Revelar isso pro PRÓPRIO usuário autenticado é seguro (ele já provou identidade
+	// via o access token); não serve de oráculo pra descobrir logins de terceiros.
+	if user.Role != "admin" && user.Role != "moderator" {
+		response.Error(w, http.StatusForbidden, "E_FORBIDDEN_ROLE", "papel insuficiente")
+		return
+	}
+
+	if !h.elevateLimiter.Allow(claims.UserID) {
+		response.Error(w, http.StatusTooManyRequests, "E_RATE_LIMITED", "muitas tentativas, aguarde")
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		// 403, não 401: o frontend trata 401 como sessão expirada e dispara rotação de
+		// refresh token, o que não queremos numa simples senha errada de step-up.
+		response.Error(w, http.StatusForbidden, "E_INVALID_PASSWORD", "senha incorreta")
+		return
+	}
+
+	token, err := h.service.GenerateElevatedToken(user)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "falha ao gerar token elevado")
+		return
+	}
+
+	response.JSON(w, http.StatusOK, map[string]interface{}{
+		"elevated_token": token,
+		"expires_at":     time.Now().Add(15 * time.Minute).Format(time.RFC3339),
+	})
 }
 
 // — Helper ─────────────────────────────────────────────────────────────────────

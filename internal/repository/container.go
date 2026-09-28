@@ -20,6 +20,7 @@ type Container struct {
 	ClassifierStates *ClassifierStateRepository
 	MerchantMappings *MerchantMappingRepository
 	Invites          *FamilyInviteRepository
+	SignupInvites    *SignupInviteRepository
 	Coupons          *CouponRepository
 }
 
@@ -36,6 +37,7 @@ func New(pool *pgxpool.Pool) *Container {
 		ClassifierStates: NewClassifierStateRepository(pool),
 		MerchantMappings: NewMerchantMappingRepository(pool),
 		Invites:          NewFamilyInviteRepository(pool),
+		SignupInvites:    NewSignupInviteRepository(pool),
 		Coupons:          NewCouponRepository(pool),
 	}
 }
@@ -96,6 +98,28 @@ func (c *Container) EnsureIndexes(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_coupons_code ON coupons(lower(code))`,
 		`INSERT INTO coupons (code, discount_percent, plan_granted) VALUES ('AMIGO100', 100, 'LIFETIME_FREE') ON CONFLICT (code) DO NOTHING`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'user'`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ`,
+		`DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint WHERE conname = 'chk_users_role'
+			) THEN
+				ALTER TABLE users ADD CONSTRAINT chk_users_role CHECK (role IN ('user','moderator','admin'));
+			END IF;
+		END $$`,
+		`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT true`,
+		`CREATE TABLE IF NOT EXISTS signup_invites (
+			id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			token              VARCHAR(64) UNIQUE NOT NULL,
+			plan_granted       VARCHAR(20) NOT NULL DEFAULT 'LIFETIME_FREE',
+			created_by         UUID NOT NULL REFERENCES users(id),
+			expires_at         TIMESTAMPTZ NOT NULL,
+			used_at            TIMESTAMPTZ,
+			used_by_family_id  UUID REFERENCES families(id),
+			created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_signup_invites_token ON signup_invites(token)`,
 	}
 
 	for _, q := range queries {

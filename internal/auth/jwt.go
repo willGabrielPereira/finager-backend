@@ -81,6 +81,22 @@ func NewService(secret string, expiresHours int) *Service {
 // The token embeds UserID, Login and FamilyID so handlers can read them
 // from context without hitting the database.
 func (s *Service) GenerateToken(user *models.User) (string, error) {
+	return s.signToken(user, s.expiresIn, nil)
+}
+
+// GenerateElevatedToken cria um JWT de curta duração (step-up auth) com a claim
+// Audience = ["admin"], usado para provar reautenticação recente antes de ações
+// administrativas sensíveis. Usa o campo UserID (não o Subject padrão do JWT,
+// que o resto do sistema não usa) para identificar o usuário, igual ao access
+// token comum — dá pra comparar os dois diretamente pelo mesmo campo.
+func (s *Service) GenerateElevatedToken(user *models.User) (string, error) {
+	return s.signToken(user, 15*time.Minute, jwt.ClaimStrings{"admin"})
+}
+
+// signToken monta e assina um JWT para o usuário com o TTL e a audience dados.
+// Compartilhado por GenerateToken (audience nil) e GenerateElevatedToken
+// (audience ["admin"]) — a única diferença real entre os dois é TTL/audience.
+func (s *Service) signToken(user *models.User, ttl time.Duration, audience jwt.ClaimStrings) (string, error) {
 	now := time.Now()
 	claims := Claims{
 		UserID:   user.ID.String(),
@@ -88,7 +104,8 @@ func (s *Service) GenerateToken(user *models.User) (string, error) {
 		FamilyID: user.FamilyID.String(),
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(s.expiresIn)),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+			Audience:  audience,
 		},
 	}
 

@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS users (
     family_id            UUID        NOT NULL REFERENCES families(id) ON DELETE CASCADE,
     onboarding_completed BOOLEAN     NOT NULL DEFAULT false,
     onboarding_step      INT         NOT NULL DEFAULT 0,
+    role                 VARCHAR(20) NOT NULL DEFAULT 'user' CHECK (role IN ('user','moderator','admin')),
+    last_login_at        TIMESTAMPTZ,
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -157,9 +159,24 @@ CREATE TABLE IF NOT EXISTS coupons (
     plan_granted     TEXT NOT NULL DEFAULT 'PRO',
     max_uses         INT,
     times_used       INT NOT NULL DEFAULT 0,
+    active           BOOLEAN NOT NULL DEFAULT true,
     expires_at       TIMESTAMPTZ,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_coupons_code ON coupons(lower(code));
 CREATE INDEX IF NOT EXISTS idx_families_plan ON families(plan);
+
+-- Convites de cadastro (concedem plano especial ao criar uma nova família)
+CREATE TABLE IF NOT EXISTS signup_invites (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    token             VARCHAR(64) UNIQUE NOT NULL,
+    plan_granted      VARCHAR(20) NOT NULL DEFAULT 'LIFETIME_FREE',
+    created_by        UUID NOT NULL REFERENCES users(id),
+    expires_at        TIMESTAMPTZ NOT NULL,
+    used_at           TIMESTAMPTZ,
+    used_by_family_id UUID REFERENCES families(id),
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_signup_invites_token ON signup_invites(token);
