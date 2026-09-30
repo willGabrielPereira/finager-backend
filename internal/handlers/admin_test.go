@@ -37,7 +37,7 @@ func newAdminMux(repos *repository.Container, authSvc *auth.Service) http.Handle
 
 	adminHandler := handlers.NewAdminHandler(repos.Users, repos.Coupons, repos.SignupInvites)
 	authHandler := auth.NewHandler(authSvc, repos.Users, repos.Families, repos.RefreshTokens, repos.Blocklist, repos.Invites, repos.SignupInvites, 1, middleware.NewInMemoryRateLimiter(10, time.Minute))
-	profileHandler := handlers.NewProfileHandler(repos.Users, repos.Families)
+	profileHandler := handlers.NewProfileHandler(repos.Users, repos.Families, nil)
 
 	mux := http.NewServeMux()
 	mux.Handle("POST /auth/register", http.HandlerFunc(authHandler.Register))
@@ -169,7 +169,6 @@ func TestAdminAccessControlByRole(t *testing.T) {
 	db, cleanup := testutil.SetupPostgresContainer(t)
 	defer cleanup()
 	repos := repository.New(db)
-	require.NoError(t, repos.EnsureIndexes(context.Background()))
 
 	authSvc := auth.NewService("teste-secret-admin", 1)
 	mux := newAdminMux(repos, authSvc)
@@ -295,7 +294,6 @@ func TestAdminSignupInviteFlow(t *testing.T) {
 	db, cleanup := testutil.SetupPostgresContainer(t)
 	defer cleanup()
 	repos := repository.New(db)
-	require.NoError(t, repos.EnsureIndexes(context.Background()))
 
 	authSvc := auth.NewService("teste-secret-invite", 1)
 	mux := newAdminMux(repos, authSvc)
@@ -379,7 +377,6 @@ func TestAdminLastAdminProtection(t *testing.T) {
 	db, cleanup := testutil.SetupPostgresContainer(t)
 	defer cleanup()
 	repos := repository.New(db)
-	require.NoError(t, repos.EnsureIndexes(context.Background()))
 
 	authSvc := auth.NewService("teste-secret-lastadmin", 1)
 	mux := newAdminMux(repos, authSvc)
@@ -425,7 +422,6 @@ func TestAdminCouponLifecycle(t *testing.T) {
 	db, cleanup := testutil.SetupPostgresContainer(t)
 	defer cleanup()
 	repos := repository.New(db)
-	require.NoError(t, repos.EnsureIndexes(context.Background()))
 
 	authSvc := auth.NewService("teste-secret-coupon", 1)
 	mux := newAdminMux(repos, authSvc)
@@ -488,7 +484,6 @@ func TestAdminCouponDeactivatedCannotBeApplied(t *testing.T) {
 	db, cleanup := testutil.SetupPostgresContainer(t)
 	defer cleanup()
 	repos := repository.New(db)
-	require.NoError(t, repos.EnsureIndexes(context.Background()))
 
 	authSvc := auth.NewService("teste-secret-coupon-inactive", 1)
 	mux := newAdminMux(repos, authSvc)

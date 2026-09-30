@@ -29,7 +29,7 @@ type registerRequest struct {
 	Login       string `json:"login"        validate:"required,min=4,max=32"`
 	Email       string `json:"email"        validate:"required,email"`
 	Password    string `json:"password"     validate:"required,min=8,max=72"`
-	FamilyName  string `json:"family_name"  validate:"omitempty,min=2"`
+	FamilyName  string `json:"family_name"  validate:"omitempty,min=2,max=60"`
 	InviteToken string `json:"invite_token" validate:"omitempty"`
 }
 
@@ -382,17 +382,12 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hash := h.service.HashToken(req.RefreshToken)
-	stored, err := h.refreshRepo.FindByHash(r.Context(), hash)
+	// Rotação: revoga o token antigo e valida (ativo, não expirado) num único
+	// statement atômico — só um Refresh concorrente com o mesmo token vence.
+	stored, err := h.refreshRepo.RevokeByHash(r.Context(), hash)
 	if err != nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		_ = json.NewEncoder(w).Encode(errorResponse{Error: "invalid or expired refresh token"})
-		return
-	}
-
-	// Rotation: revoke the old token before issuing a new one.
-	if err := h.refreshRepo.Revoke(r.Context(), stored.ID); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(errorResponse{Error: "internal error"})
 		return
 	}
 
@@ -453,9 +448,8 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&req) // body is optional
 	if req.RefreshToken != "" {
 		hash := h.service.HashToken(req.RefreshToken)
-		if stored, err := h.refreshRepo.FindByHash(r.Context(), hash); err == nil {
-			_ = h.refreshRepo.Revoke(r.Context(), stored.ID)
-		}
+		// Idempotente: token já revogado, expirado ou inexistente é ignorado.
+		_, _ = h.refreshRepo.RevokeByHash(r.Context(), hash)
 	}
 
 	w.WriteHeader(http.StatusNoContent)

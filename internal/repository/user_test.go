@@ -22,8 +22,6 @@ func TestUserRepository(t *testing.T) {
 
 	// Inicia o container de repositórios (já que o repo do usuário fica dentro dele agora)
 	repos := repository.New(db)
-	err := repos.EnsureIndexes(ctx)
-	require.NoError(t, err, "falha ao garantir índices")
 
 	t.Run("Create and FindByLogin", func(t *testing.T) {
 		family := &models.Family{ID: uuid.New(), Name: "Test Family"}
@@ -37,7 +35,7 @@ func TestUserRepository(t *testing.T) {
 			FamilyID:     familyID,
 		}
 
-		err = repos.Users.Create(ctx, user)
+		err := repos.Users.Create(ctx, user)
 		require.NoError(t, err)
 
 		// Verifica se foi gerado o ObjectId e timestamps

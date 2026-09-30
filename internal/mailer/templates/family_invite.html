@@ -1,0 +1,7 @@
+{{define "subject"}}{{.InviterLogin}} convidou você para a família {{.FamilyName}} no Finager{{end}}
+{{define "content"}}
+  <p style="margin:0 0 16px;">Olá!</p>
+  <p style="margin:0 0 16px;"><strong>{{.InviterLogin}}</strong> convidou você para participar da família <strong>{{.FamilyName}}</strong> no Finager.</p>
+  <p style="margin:0 0 16px;"><a href="{{.Link}}" style="background:#2563eb;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;display:inline-block;">Aceitar convite</a></p>
+  <p style="margin:0;">Se você não esperava este convite, basta ignorar este e-mail.</p>
+{{end}}

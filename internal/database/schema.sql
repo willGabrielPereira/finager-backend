@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS families (
     subscription_expires_at  TIMESTAMPTZ,
     subscription_provider    TEXT,
     external_subscription_id TEXT,
+    ofx_reminder_sent_at     TIMESTAMPTZ,
     created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -24,6 +25,7 @@ CREATE TABLE IF NOT EXISTS users (
     onboarding_step      INT         NOT NULL DEFAULT 0,
     role                 VARCHAR(20) NOT NULL DEFAULT 'user' CHECK (role IN ('user','moderator','admin')),
     last_login_at        TIMESTAMPTZ,
+    email_reminders_opt_out BOOLEAN  NOT NULL DEFAULT false,
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -110,6 +112,15 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
     revoked    BOOLEAN     NOT NULL DEFAULT false
 );
 
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id    UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT        NOT NULL UNIQUE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    used_at    TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS blocklist (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     token_hash TEXT        NOT NULL UNIQUE,
@@ -145,6 +156,8 @@ CREATE TABLE IF NOT EXISTS classifier_states (
 CREATE INDEX IF NOT EXISTS idx_transactions_family_date ON transactions(family_id, date_posted DESC);
 CREATE INDEX IF NOT EXISTS idx_transactions_account ON transactions(account_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(family_id, status);
+CREATE INDEX IF NOT EXISTS idx_transactions_family_ofx_imported ON transactions(family_id, imported_at DESC) WHERE source = 'OFX';
+CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user ON password_reset_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_merchant_mappings_family ON merchant_mappings(family_id);
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_blocklist_expires ON blocklist(expires_at);

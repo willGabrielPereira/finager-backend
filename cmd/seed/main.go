@@ -64,10 +64,6 @@ func main() {
 
 	repos := repository.New(db.Pool)
 
-	if err := repos.EnsureIndexes(ctx); err != nil {
-		log.Fatalf("EnsureIndexes: %v", err)
-	}
-
 	// ── Tags de sistema ───────────────────────────────────────────────────────
 	nameToID := ensureSystemTags(ctx, repos.Tags)
 	log.Printf("✓ System Tags : %d tags ensured", len(nameToID))

@@ -27,6 +27,8 @@ import (
 	"github.com/willGabrielPereira/finager-backend/internal/auth"
 	"github.com/willGabrielPereira/finager-backend/internal/config"
 	"github.com/willGabrielPereira/finager-backend/internal/database"
+	"github.com/willGabrielPereira/finager-backend/internal/jobs"
+	"github.com/willGabrielPereira/finager-backend/internal/mailer"
 	"github.com/willGabrielPereira/finager-backend/internal/middleware"
 	"github.com/willGabrielPereira/finager-backend/internal/repository"
 )
@@ -64,21 +66,19 @@ func main() {
 	// 3. Inicializa repositórios injetando o Pool
 	repos := repository.New(db.Pool)
 
-	// ── Índices (idempotente — seguro executar em todo startup) ───────────────
-	startupCtx, cancelStartup := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancelStartup()
-
-	if err := repos.EnsureIndexes(startupCtx); err != nil {
-		logger.Error("falha ao criar índices do banco", "err", err)
-		os.Exit(1)
-	}
-
 	// ── Serviço de Auth ───────────────────────────────────────────────────────
 	authSvc := auth.NewService(cfg.JWTSecret, cfg.JWTExpiresHours)
 
+	// ── E-mail — nil com MAIL_PROVIDER=none (kill switch); erro = config inválida ──
+	sender, err := mailer.New(cfg)
+	if err != nil {
+		logger.Error("configuração de e-mail inválida", "err", err)
+		os.Exit(1)
+	}
+
 	// ── Roteamento ────────────────────────────────────────────────────────────
 	mux := http.NewServeMux()
-	registerRoutes(mux, repos, authSvc, cfg.JWTRefreshExpiresHours)
+	registerRoutes(mux, repos, authSvc, cfg, sender)
 
 	// ── Middlewares globais (Security, CORS e Logging/Sentry) ──────────────────
 	rootHandler := middleware.SecurityHeaders(mux)
@@ -92,6 +92,21 @@ func main() {
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
+	}
+
+	// ── Jobs em segundo plano — lembrete OFX só com e-mail ligado E flag ativa ──
+	jobsCtx, stopJobs := context.WithCancel(context.Background())
+	defer stopJobs()
+	var jobsDone <-chan struct{}
+	if sender != nil && cfg.OFXRemindersEnabled {
+		unsubSecret := []byte(cfg.JWTSecret)
+		jobsDone = jobs.StartOFXReminders(jobsCtx, func(ctx context.Context) {
+			// ponytail: pausa de 600ms ≈ 1,6 envios/s por réplica, abaixo dos ~2 rps do Resend
+			if _, err := jobs.RunOFXReminders(ctx, repos.Families, repos.Users, sender, cfg.AppBaseURL, unsubSecret, cfg.OFXRemindersDailyCap, 600*time.Millisecond); err != nil && ctx.Err() == nil {
+				logger.Error("ofx_reminder.failed", "err", err)
+			}
+		})
+		logger.Info("ofx_reminder.enabled", "daily_cap", cfg.OFXRemindersDailyCap)
 	}
 
 	go func() {
@@ -116,4 +131,15 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("server stopped")
+
+	// Para os jobs e espera o ciclo em andamento ANTES do db.Close() (defer acima),
+	// para um envio não perder a conexão no meio.
+	stopJobs()
+	if jobsDone != nil {
+		select {
+		case <-jobsDone:
+		case <-time.After(15 * time.Second):
+			logger.Warn("jobs não terminaram em 15s; encerrando mesmo assim")
+		}
+	}
 }

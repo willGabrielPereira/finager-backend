@@ -189,6 +189,62 @@ func (r *FamilyRepository) CountAccounts(ctx context.Context, familyID uuid.UUID
 	return count, err
 }
 
+// ClaimedFamily é uma família reivindicada para o lembrete OFX.
+type ClaimedFamily struct {
+	ID      uuid.UUID
+	Name    string
+	LastRef time.Time // última importação OFX (ou criação da família, se nunca importou)
+}
+
+// ClaimStaleOFXReminders marca atomicamente (ofx_reminder_sent_at = now()) até dailyCap
+// famílias sem importação OFX desde cutoff e ainda não lembradas desde a última
+// importação, e as devolve. O teto é por dia (janela de 20h) e medido NO BANCO (famílias
+// marcadas nas últimas 20h), então reinícios, crash-loop e réplicas não multiplicam o envio.
+// A re-checagem no UPDATE (sob lock de linha) faz uma chamada concorrente que perdeu a
+// corrida receber 0 linhas para a família já marcada.
+func (r *FamilyRepository) ClaimStaleOFXReminders(ctx context.Context, cutoff time.Time, dailyCap int) ([]ClaimedFamily, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	query := `
+		WITH stale AS (
+			SELECT f.id, COALESCE(MAX(t.imported_at), f.created_at) AS last_ref
+			FROM families f
+			LEFT JOIN transactions t ON t.family_id = f.id AND t.source = 'OFX'
+			GROUP BY f.id
+			HAVING COALESCE(MAX(t.imported_at), f.created_at) < $1
+			   AND (f.ofx_reminder_sent_at IS NULL
+			        OR f.ofx_reminder_sent_at < COALESCE(MAX(t.imported_at), f.created_at))
+			ORDER BY last_ref DESC
+			-- teto por dia (janela de 20h) contado no próprio banco: reinícios da API e réplicas não multiplicam o envio
+			LIMIT GREATEST($2 - (SELECT count(*) FROM families
+			                     WHERE ofx_reminder_sent_at > now() - interval '20 hours'), 0)
+		)
+		UPDATE families f
+		SET ofx_reminder_sent_at = now()
+		FROM stale
+		WHERE f.id = stale.id
+		  -- re-checada sob lock de linha: se outra réplica já marcou, now() > last_ref -> 0 linhas
+		  AND (f.ofx_reminder_sent_at IS NULL OR f.ofx_reminder_sent_at < stale.last_ref)
+		RETURNING f.id, f.name, stale.last_ref
+	`
+	rows, err := r.pool.Query(ctx, query, cutoff, dailyCap)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var claimed []ClaimedFamily
+	for rows.Next() {
+		var c ClaimedFamily
+		if err := rows.Scan(&c.ID, &c.Name, &c.LastRef); err != nil {
+			return nil, err
+		}
+		claimed = append(claimed, c)
+	}
+	return claimed, rows.Err()
+}
+
 // CountMembers retorna a quantidade de membros associados à família.
 func (r *FamilyRepository) CountMembers(ctx context.Context, familyID uuid.UUID) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)

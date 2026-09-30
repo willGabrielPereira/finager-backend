@@ -25,13 +25,11 @@ func TestDeleteAccountSecurityAndCascade(t *testing.T) {
 	db, cleanup := testutil.SetupPostgresContainer(t)
 	defer cleanup()
 	repos := repository.New(db)
-	err := repos.EnsureIndexes(context.Background())
-	require.NoError(t, err)
 
 	authSvc := auth.NewService("teste-secret-me", 1)
 	authMid := middleware.Authenticate(authSvc, repos.Blocklist)
 
-	profileHandler := handlers.NewProfileHandler(repos.Users, repos.Families)
+	profileHandler := handlers.NewProfileHandler(repos.Users, repos.Families, nil)
 	mux := http.NewServeMux()
 	mux.Handle("DELETE /me", authMid(http.HandlerFunc(profileHandler.Delete)))
 

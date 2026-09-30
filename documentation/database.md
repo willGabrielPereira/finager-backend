@@ -4,12 +4,13 @@ Este documento descreve como o schema do PostgreSQL é gerenciado no projeto e c
 
 ---
 
-## 1. Sincronização Obrigatória do Schema (Os 3 Locais)
+## 1. Sincronização Obrigatória do Schema (Os 2 Locais)
 
-O schema do banco vive em **três lugares complementares**. Qualquer alteração de DDL (novas tabelas, colunas, chaves estrangeiras ou índices) **deve** ser refletida nos três:
+O schema do banco vive em **dois lugares complementares**. Qualquer alteração de DDL (novas tabelas, colunas, chaves estrangeiras ou índices) **deve** ser refletida nos dois:
 
 1. **`internal/migrations/NNN_nome.go` (Migração Oficial da Aplicação):**
    - É a trilha real de migração executada em produção e desenvolvimento via `make migrate`.
+   - O `Dockerfile` já roda `finager-migrate up` antes de subir a API (`ENTRYPOINT`), então o schema de produção está sempre atualizado no boot.
    - Auto-registrada através de `func init() { Register(&MNNNNome{}) }`.
    - Ordenada lexicograficamente pelo retorno de `ID()`.
 
@@ -17,11 +18,7 @@ O schema do banco vive em **três lugares complementares**. Qualquer alteração
    - Utilizado **exclusivamente** pelos testes de integração automatizados.
    - O container Docker de testes sobe executando este arquivo como init script. Se uma coluna nova não estiver aqui, os testes de integração irão falhar com erro de coluna inexistente.
 
-3. **`repository.Container.EnsureIndexes` (`internal/repository/container.go`):**
-   - Bloco idempotente de queries DDL executado:
-     - No boot do servidor HTTP (`cmd/api/main.go`).
-     - No início de todo teste de integração (`repos.EnsureIndexes(ctx)`).
-   - Use comandos com salvaguardas idempotentes (`ADD COLUMN IF NOT EXISTS`, `CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`).
+> Havia um terceiro local, `repository.Container.EnsureIndexes`, que reexecutava a mesma DDL idempotente no boot e em cada teste — pura redundância, já que `make migrate` (produção) e `schema.sql` (testes) já cobriam tudo. Foi removido; não recrie esse padrão.
 
 ---
 
@@ -57,7 +54,6 @@ func init() {
 ```
 
 3. Adicione o mesmo DDL em `internal/database/schema.sql`.
-4. Adicione a query idempotente dentro do slice `queries` em `EnsureIndexes` (`internal/repository/container.go`).
 
 ---
 
@@ -84,9 +80,6 @@ func TestMinhaFuncionalidade(t *testing.T) {
 	defer cleanup()
 
 	repos := repository.New(db)
-	if err := repos.EnsureIndexes(ctx); err != nil {
-		t.Fatalf("falha ao rodar EnsureIndexes: %v", err)
-	}
 
 	// Executar asserções...
 }

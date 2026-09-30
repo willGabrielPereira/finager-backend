@@ -19,10 +19,6 @@ func NewClassifierStateRepository(pool *pgxpool.Pool) *ClassifierStateRepository
 	return &ClassifierStateRepository{pool: pool}
 }
 
-func (r *ClassifierStateRepository) EnsureIndexes(ctx context.Context) error {
-	return nil
-}
-
 func (r *ClassifierStateRepository) FindByFamilyID(ctx context.Context, familyID *uuid.UUID) (*models.ClassifierState, error) {
 	query := `
 		SELECT id, family_id, total_docs, class_docs, class_word_counts, class_total_words, vocabulary, updated_at

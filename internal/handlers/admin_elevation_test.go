@@ -26,7 +26,6 @@ func TestElevation_AccessTokenSemHeaderElevacao_RetornaElevationRequired(t *test
 	db, cleanup := testutil.SetupPostgresContainer(t)
 	defer cleanup()
 	repos := repository.New(db)
-	require.NoError(t, repos.EnsureIndexes(context.Background()))
 
 	authSvc := auth.NewService("teste-secret-elev-a", 1)
 	mux := newAdminMux(repos, authSvc)
@@ -50,7 +49,6 @@ func TestElevation_TokenElevadoInvalido_RetornaElevationRequired(t *testing.T) {
 	db, cleanup := testutil.SetupPostgresContainer(t)
 	defer cleanup()
 	repos := repository.New(db)
-	require.NoError(t, repos.EnsureIndexes(context.Background()))
 
 	authSvc := auth.NewService("teste-secret-elev-b", 1)
 	mux := newAdminMux(repos, authSvc)
@@ -110,7 +108,6 @@ func TestElevation_TokenElevadoDeOutroUsuario_RetornaElevationRequired(t *testin
 	db, cleanup := testutil.SetupPostgresContainer(t)
 	defer cleanup()
 	repos := repository.New(db)
-	require.NoError(t, repos.EnsureIndexes(context.Background()))
 
 	authSvc := auth.NewService("teste-secret-elev-c", 1)
 	mux := newAdminMux(repos, authSvc)
@@ -136,7 +133,6 @@ func TestElevation_TokenElevadoNoHeaderAuthorization_RetornaUnauthorized(t *test
 	db, cleanup := testutil.SetupPostgresContainer(t)
 	defer cleanup()
 	repos := repository.New(db)
-	require.NoError(t, repos.EnsureIndexes(context.Background()))
 
 	authSvc := auth.NewService("teste-secret-elev-d", 1)
 	mux := newAdminMux(repos, authSvc)
@@ -157,7 +153,6 @@ func TestElevation_PostAuthElevate_SenhaErradaERateLimit(t *testing.T) {
 	db, cleanup := testutil.SetupPostgresContainer(t)
 	defer cleanup()
 	repos := repository.New(db)
-	require.NoError(t, repos.EnsureIndexes(context.Background()))
 
 	authSvc := auth.NewService("teste-secret-elev-e", 1)
 	mux := newAdminMux(repos, authSvc)
@@ -197,7 +192,6 @@ func TestElevation_UsuarioComumChamandoRotaAdmin_RetornaForbiddenDeRoleSemCodigo
 	db, cleanup := testutil.SetupPostgresContainer(t)
 	defer cleanup()
 	repos := repository.New(db)
-	require.NoError(t, repos.EnsureIndexes(context.Background()))
 
 	authSvc := auth.NewService("teste-secret-elev-f", 1)
 	mux := newAdminMux(repos, authSvc)
@@ -227,7 +221,6 @@ func TestElevation_AdminRebaixadoComTokenElevadoValido_AindaRecebeForbiddenDeRol
 	db, cleanup := testutil.SetupPostgresContainer(t)
 	defer cleanup()
 	repos := repository.New(db)
-	require.NoError(t, repos.EnsureIndexes(context.Background()))
 
 	authSvc := auth.NewService("teste-secret-elev-g", 1)
 	mux := newAdminMux(repos, authSvc)
@@ -262,7 +255,6 @@ func TestElevation_LogoutComTokenElevado_BlocklistaOToken(t *testing.T) {
 	db, cleanup := testutil.SetupPostgresContainer(t)
 	defer cleanup()
 	repos := repository.New(db)
-	require.NoError(t, repos.EnsureIndexes(context.Background()))
 
 	authSvc := auth.NewService("teste-secret-elev-h", 1)
 	mux := newAdminMux(repos, authSvc)
@@ -304,7 +296,6 @@ func TestElevation_PostAuthElevate_UsuarioComum_RetornaForbiddenRoleSemToken(t *
 	db, cleanup := testutil.SetupPostgresContainer(t)
 	defer cleanup()
 	repos := repository.New(db)
-	require.NoError(t, repos.EnsureIndexes(context.Background()))
 
 	authSvc := auth.NewService("teste-secret-elev-i", 1)
 	mux := newAdminMux(repos, authSvc)

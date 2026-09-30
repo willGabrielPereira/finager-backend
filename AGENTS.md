@@ -12,10 +12,9 @@ Stack: PostgreSQL 15 via `pgx/v5` (`pgxpool`), stdlib `net/http` (Go 1.22+ Serve
    - Em clones novos ou após qualquer alteração em anotações Swagger nos handlers (`@Param`, `@Success`, `@Failure`, etc.), execute `make docs` (`swag init -g cmd/api/main.go --output docs`).
    - Sem gerar o Swagger, `go build ./...` e `go test ./cmd/...` irão **falhar**.
 
-2. **Database Schema vive em TRÊS lugares (Mantenha sempre sincronizado):**
-   - `internal/migrations/NNN_*.go`: Migração real auto-registrada via `init()` com `Register(&MNNN{})`.
+2. **Database Schema vive em DOIS lugares (Mantenha sempre sincronizado):**
+   - `internal/migrations/NNN_*.go`: Migração real auto-registrada via `init()` com `Register(&MNNN{})`, aplicada em produção via `make migrate` (o `Dockerfile` já roda `finager-migrate up` antes de subir a API).
    - `internal/database/schema.sql`: DDL utilizado como init script do container nos testes com Testcontainers.
-   - `repository.Container.EnsureIndexes` (`internal/repository/container.go`): DDL idempotente (`IF NOT EXISTS`) executado no boot e nos testes de integração.
 
 3. **Multi-Tenancy e Isolamento por Família:**
    - Todo dado pertence a uma família (`family_id`). O `middleware.Authenticate` injeta as claims no `context.Context`.
@@ -60,4 +59,5 @@ Não carregue estes arquivos no contexto se a sua tarefa não estiver diretament
 - **Migrations, Schema do Postgres e Testcontainers:** Leia `documentation/database.md`.
 - **Planos, Quotas, Limites e Mock de Cobrança:** Leia `documentation/billing.md`.
 - **Classificador Naive Bayes, Merchant Rules ou OFX:** Leia `documentation/ai_classifier.md`.
+- **E-mail (pacote `mailer`, provedores Resend/SMTP, Mailpit, lembrete OFX, domínio):** Leia `documentation/email.md`.
 - **Diretrizes de Produção, Negócios e Infraestrutura:** Leia `documentation/production_launch_and_billing_plan.md`.

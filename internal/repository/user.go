@@ -20,11 +20,6 @@ func NewUserRepository(pool *pgxpool.Pool) *UserRepository {
 	return &UserRepository{pool: pool}
 }
 
-// EnsureIndexes is kept for interface compatibility (indexes created via schema.sql)
-func (r *UserRepository) EnsureIndexes(ctx context.Context) error {
-	return nil
-}
-
 // FindByLogin returns the user with the given login, or pgx.ErrNoRows.
 func (r *UserRepository) FindByLogin(ctx context.Context, login string) (*models.User, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -391,6 +386,61 @@ func (r *UserRepository) UpdateLastLogin(ctx context.Context, userID uuid.UUID) 
 
 	query := `UPDATE users SET last_login_at = now() WHERE id = $1`
 	_, err := r.pool.Exec(ctx, query, userID)
+	return err
+}
+
+// ReminderRecipient é um destinatário elegível do lembrete OFX.
+type ReminderRecipient struct {
+	ID    uuid.UUID
+	Login string
+	Email string
+}
+
+// ListReminderRecipients devolve os destinatários elegíveis do lembrete OFX da família.
+// Pertencimento real = interseção de users.family_id e family_members: RemoveMember só
+// apaga family_members e Join só troca users.family_id — exigir as duas impede que um
+// ex-membro (ou membro migrado) apareça no To: dos membros atuais (vazamento de PII).
+// Engajamento: login/cadastro nos últimos 180 dias OU refresh token válido (quem só
+// renova a sessão sem re-logar continua ativo).
+func (r *UserRepository) ListReminderRecipients(ctx context.Context, familyID uuid.UUID) ([]ReminderRecipient, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	query := `
+		SELECT u.id, u.login, u.email
+		FROM users u
+		JOIN family_members fm ON fm.user_id = u.id AND fm.family_id = $1
+		WHERE u.family_id = $1
+		  AND u.email IS NOT NULL
+		  AND NOT u.email_reminders_opt_out
+		  AND u.role = 'user'
+		  AND (COALESCE(u.last_login_at, u.created_at) > now() - interval '180 days'
+		       OR EXISTS (SELECT 1 FROM refresh_tokens rt
+		                  WHERE rt.user_id = u.id AND NOT rt.revoked AND rt.expires_at > now()))
+	`
+	rows, err := r.pool.Query(ctx, query, familyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []ReminderRecipient
+	for rows.Next() {
+		var rr ReminderRecipient
+		if err := rows.Scan(&rr.ID, &rr.Login, &rr.Email); err != nil {
+			return nil, err
+		}
+		out = append(out, rr)
+	}
+	return out, rows.Err()
+}
+
+// SetRemindersOptOut descadastra o usuário dos lembretes por e-mail (idempotente).
+func (r *UserRepository) SetRemindersOptOut(ctx context.Context, userID uuid.UUID) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	_, err := r.pool.Exec(ctx, `UPDATE users SET email_reminders_opt_out = true WHERE id = $1`, userID)
 	return err
 }
 

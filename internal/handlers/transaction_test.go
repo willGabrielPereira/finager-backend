@@ -29,8 +29,6 @@ func TestTransactionIntegrationAndSecurity(t *testing.T) {
 	db, cleanup := testutil.SetupPostgresContainer(t)
 	defer cleanup()
 	repos := repository.New(db)
-	err := repos.EnsureIndexes(context.Background())
-	require.NoError(t, err)
 
 	// 2. Mock do AuthService para geração de tokens para nossos HTTP Tests
 	authSvc := auth.NewService("teste-secret", 1)

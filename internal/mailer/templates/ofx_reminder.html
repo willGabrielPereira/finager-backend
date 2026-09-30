@@ -1,0 +1,7 @@
+{{define "subject"}}Família {{.FamilyName}}: hora de importar seus extratos{{end}}
+{{define "content"}}
+  <p style="margin:0 0 16px;">Olá, família {{.FamilyName}}!</p>
+  <p style="margin:0 0 16px;">Nenhuma transação nova foi importada via OFX há 30 dias. Importe seus extratos para manter suas finanças em dia.</p>
+  <p style="margin:0 0 16px;"><a href="{{.AppURL}}" style="background:#2563eb;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;display:inline-block;">Abrir o Finager</a></p>
+  <p style="margin:0;font-size:12px;color:#6b7280;">Não quer mais receber este lembrete? {{range .Unsubscribe}}<a href="{{.URL}}" style="color:#2563eb;">{{.Login}}: descadastrar</a> {{end}}</p>
+{{end}}

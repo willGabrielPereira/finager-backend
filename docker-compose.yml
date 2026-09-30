@@ -13,9 +13,12 @@ services:
     environment:
       DATABASE_URL: postgres://postgres:postgres@db:5432/finager?sslmode=disable
       SEED_TAGS_ONLY: "true"
+      SMTP_HOST: mailpit
     depends_on:
       db:
         condition: service_healthy
+      mailpit:
+        condition: service_started
     networks:
       - finager_net
 
@@ -37,6 +40,17 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - finager_net
+
+  # ─── Mailpit (SMTP fake para dev — UI em http://localhost:8025) ────────────
+  mailpit:
+    image: axllent/mailpit:v1.31.3
+    container_name: finager_mailpit
+    restart: unless-stopped
+    ports:
+      - "1025:1025"
+      - "8025:8025"
     networks:
       - finager_net
 

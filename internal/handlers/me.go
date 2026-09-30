@@ -1,16 +1,23 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/getsentry/sentry-go"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
+	"github.com/willGabrielPereira/finager-backend/internal/mailer"
 	"github.com/willGabrielPereira/finager-backend/internal/middleware"
 	"github.com/willGabrielPereira/finager-backend/internal/repository"
 	"github.com/willGabrielPereira/finager-backend/internal/response"
+	"github.com/willGabrielPereira/finager-backend/pkg/validator"
 )
 
 type ProfileResponse struct {
@@ -28,22 +35,25 @@ type ProfileResponse struct {
 }
 
 type updateProfileRequest struct {
-	Login      string `json:"login"`
-	Email      string `json:"email"`
-	FamilyName string `json:"family_name"`
+	Login           string `json:"login"`
+	Email           string `json:"email" validate:"omitempty,email"`
+	FamilyName      string `json:"family_name"`
+	CurrentPassword string `json:"current_password"` // obrigatório só quando o e-mail muda
 }
 
 // ProfileHandler gerencia consulta e atualização dos dados cadastrais do usuário e sua família.
 type ProfileHandler struct {
 	userRepo   *repository.UserRepository
 	familyRepo *repository.FamilyRepository
+	sender     mailer.Sender // nil = e-mail desligado
 }
 
 // NewProfileHandler instancia o ProfileHandler com os repositórios necessários.
-func NewProfileHandler(userRepo *repository.UserRepository, familyRepo *repository.FamilyRepository) *ProfileHandler {
+func NewProfileHandler(userRepo *repository.UserRepository, familyRepo *repository.FamilyRepository, sender mailer.Sender) *ProfileHandler {
 	return &ProfileHandler{
 		userRepo:   userRepo,
 		familyRepo: familyRepo,
+		sender:     sender,
 	}
 }
 
@@ -94,7 +104,7 @@ func (h *ProfileHandler) Get(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Update atualiza nome de usuário e/ou nome da família.
+// Update atualiza login, e-mail (exige current_password) e/ou nome da família.
 // @Summary      Atualizar perfil
 // @Tags         profile
 // @Router       /me [put]
@@ -123,8 +133,19 @@ func (h *ProfileHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newLogin := strings.TrimSpace(req.Login)
-	if newLogin != "" && newLogin != user.Login {
+	// Normaliza ANTES de validar (mesmo padrão do Register): " Nome@X.com " é aceito.
+	req.Login = strings.TrimSpace(req.Login)
+	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
+	req.FamilyName = strings.TrimSpace(req.FamilyName)
+	if errs := validator.Struct(req); errs != nil {
+		response.Validations(w, errs...)
+		return
+	}
+
+	// Valida TUDO antes de gravar qualquer coisa: falha de validação não deixa efeito parcial.
+	newLogin := req.Login
+	loginChanged := newLogin != "" && newLogin != user.Login
+	if loginChanged {
 		if len(newLogin) < 4 {
 			response.Error(w, http.StatusUnprocessableEntity, "E_VALIDATION", "O login deve ter pelo menos 4 caracteres")
 			return
@@ -134,17 +155,19 @@ func (h *ProfileHandler) Update(w http.ResponseWriter, r *http.Request) {
 			response.Error(w, http.StatusConflict, "E_CONFLICT", "Este login já está em uso por outro usuário")
 			return
 		}
-		if err := h.userRepo.UpdateLogin(r.Context(), user.ID, newLogin); err != nil {
-			response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha ao atualizar login")
-			return
-		}
-		user.Login = newLogin
 	}
 
-	newEmail := strings.ToLower(strings.TrimSpace(req.Email))
-	if newEmail != "" && newEmail != strings.ToLower(user.Email) {
-		if !strings.Contains(newEmail, "@") || !strings.Contains(newEmail, ".") {
-			response.Error(w, http.StatusUnprocessableEntity, "E_VALIDATION", "Por favor informe um e-mail válido")
+	newEmail := req.Email
+	emailChanged := newEmail != "" && newEmail != strings.ToLower(user.Email)
+	if emailChanged {
+		// Senha antes da unicidade: sem senha não dá para sondar quais e-mails existem.
+		// 422 (não 401) para o front não tratar como sessão expirada.
+		if req.CurrentPassword == "" {
+			response.Error(w, http.StatusUnprocessableEntity, "E_PASSWORD_REQUIRED", "Informe sua senha atual para alterar o e-mail")
+			return
+		}
+		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.CurrentPassword)); err != nil {
+			response.Error(w, http.StatusUnprocessableEntity, "E_INVALID_PASSWORD", "Senha atual incorreta")
 			return
 		}
 		existing, _ := h.userRepo.FindByEmail(r.Context(), newEmail)
@@ -152,19 +175,50 @@ func (h *ProfileHandler) Update(w http.ResponseWriter, r *http.Request) {
 			response.Error(w, http.StatusConflict, "E_CONFLICT", "Este e-mail já está em uso por outro usuário")
 			return
 		}
+	}
+
+	newFamilyName := req.FamilyName
+	if n := utf8.RuneCountInString(newFamilyName); newFamilyName != "" && (n < 2 || n > 60) {
+		response.Error(w, http.StatusUnprocessableEntity, "E_VALIDATION", "O nome da família deve ter entre 2 e 60 caracteres")
+		return
+	}
+
+	if loginChanged {
+		if err := h.userRepo.UpdateLogin(r.Context(), user.ID, newLogin); err != nil {
+			response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha ao atualizar login")
+			return
+		}
+		user.Login = newLogin
+	}
+
+	if emailChanged {
+		oldEmail := user.Email
 		if err := h.userRepo.UpdateEmail(r.Context(), user.ID, newEmail); err != nil {
 			response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha ao atualizar e-mail")
 			return
 		}
 		user.Email = newEmail
+
+		if oldEmail != "" && h.sender != nil {
+			// Tudo capturado em locais: a goroutine nunca lê 'user'. Render roda lá dentro
+			// para que falha de template não vire 5xx depois do e-mail já gravado.
+			sender, login, masked := h.sender, user.Login, mailer.Mask(newEmail)
+			mailer.Go("email_changed", 10*time.Second, func(ctx context.Context) {
+				subject, body, err := mailer.Render("email_changed", map[string]string{"Login": login, "NewEmail": masked})
+				if err == nil {
+					err = sender.Send(ctx, mailer.Message{To: []string{oldEmail}, Subject: subject, HTML: body})
+				}
+				if err != nil {
+					slog.Error("email.failed", "event", "email_changed", "to", mailer.Mask(oldEmail), "err", err)
+					sentry.CaptureException(fmt.Errorf("email failed (email_changed): %w", err))
+					return
+				}
+				slog.Info("email.sent", "event", "email_changed", "to", mailer.Mask(oldEmail))
+			})
+		}
 	}
 
-	newFamilyName := strings.TrimSpace(req.FamilyName)
 	if newFamilyName != "" {
-		if len(newFamilyName) < 2 {
-			response.Error(w, http.StatusUnprocessableEntity, "E_VALIDATION", "O nome da família deve ter pelo menos 2 caracteres")
-			return
-		}
 		_ = h.familyRepo.UpdateName(r.Context(), user.FamilyID, newFamilyName)
 	}
 

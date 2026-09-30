@@ -27,7 +27,6 @@ func TestLoginUpdatesLastLoginAt(t *testing.T) {
 	db, cleanup := testutil.SetupPostgresContainer(t)
 	defer cleanup()
 	repos := repository.New(db)
-	require.NoError(t, repos.EnsureIndexes(context.Background()))
 
 	authSvc := auth.NewService("teste-secret-login", 1)
 	authHandler := auth.NewHandler(authSvc, repos.Users, repos.Families, repos.RefreshTokens, repos.Blocklist, repos.Invites, repos.SignupInvites, 1, middleware.NewInMemoryRateLimiter(10, time.Minute))

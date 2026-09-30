@@ -16,10 +16,6 @@ func NewBlocklistRepository(pool *pgxpool.Pool) *BlocklistRepository {
 	return &BlocklistRepository{pool: pool}
 }
 
-func (r *BlocklistRepository) EnsureIndexes(ctx context.Context) error {
-	return nil
-}
-
 func (r *BlocklistRepository) Add(ctx context.Context, hash string, expiresAt time.Time) error {
 	query := `INSERT INTO blocklist (token_hash, expires_at) VALUES ($1, $2) ON CONFLICT DO NOTHING`
 	_, err := r.pool.Exec(ctx, query, hash, expiresAt)

@@ -8,7 +8,9 @@ import (
 
 	"github.com/willGabrielPereira/finager-backend/internal/auth"
 	"github.com/willGabrielPereira/finager-backend/internal/billing"
+	"github.com/willGabrielPereira/finager-backend/internal/config"
 	"github.com/willGabrielPereira/finager-backend/internal/handlers"
+	"github.com/willGabrielPereira/finager-backend/internal/mailer"
 	"github.com/willGabrielPereira/finager-backend/internal/middleware"
 	"github.com/willGabrielPereira/finager-backend/internal/repository"
 )
@@ -19,7 +21,8 @@ func registerRoutes(
 	mux *http.ServeMux,
 	repos *repository.Container,
 	authSvc *auth.Service,
-	jwtRefreshExpiresHours int,
+	cfg *config.Config,
+	sender mailer.Sender, // nil = e-mail desligado
 ) {
 	// elevateLimiter é por usuário (não por IP como o loginLimiter), então precisa
 	// da sua própria instância — reaproveitar o loginLimiter misturaria as duas chaves.
@@ -33,7 +36,7 @@ func registerRoutes(
 		repos.Blocklist,
 		repos.Invites,
 		repos.SignupInvites,
-		jwtRefreshExpiresHours,
+		cfg.JWTRefreshExpiresHours,
 		elevateLimiter,
 	)
 
@@ -41,6 +44,13 @@ func registerRoutes(
 
 	loginLimiter := middleware.NewInMemoryRateLimiter(10, time.Minute)
 	refreshLimiter := middleware.NewInMemoryRateLimiter(20, time.Minute)
+
+	// Recuperação de senha: limites distintos por IP (forgot/reset) e por e-mail
+	// (aplicado dentro da goroutine de envio, sem afetar a resposta 202).
+	forgotLimiter := middleware.NewInMemoryRateLimiter(5, 15*time.Minute)
+	forgotEmailLimiter := middleware.NewInMemoryRateLimiter(3, time.Hour)
+	resetLimiter := middleware.NewInMemoryRateLimiter(10, 15*time.Minute)
+	passwordResetHandler := auth.NewPasswordResetHandler(authSvc, repos.Users, repos.PasswordResets, repos.RefreshTokens, sender, forgotEmailLimiter, cfg.AppBaseURL)
 
 	mockBillingProvider := billing.NewMockProvider()
 	billingSvc := billing.NewService(mockBillingProvider, repos.Families, repos.Coupons)
@@ -50,9 +60,14 @@ func registerRoutes(
 	tagHandler := handlers.NewTagHandler(repos.Tags)
 	accHandler := handlers.NewAccountHandler(repos.Accounts, billingSvc)
 	aiHandler := handlers.NewAIHandler(repos.Transactions, repos.Tags, repos.ClassifierStates, repos.MerchantMappings)
-	profileHandler := handlers.NewProfileHandler(repos.Users, repos.Families)
-	familyHandler := handlers.NewFamilyHandler(repos.Families, repos.Invites, repos.Users, billingSvc)
+	profileHandler := handlers.NewProfileHandler(repos.Users, repos.Families, sender)
+	// Anti-relay: no máximo 10 e-mails de convite de família por usuário por dia.
+	inviteEmailLimiter := middleware.NewInMemoryRateLimiter(10, 24*time.Hour)
+	familyHandler := handlers.NewFamilyHandler(repos.Families, repos.Invites, repos.Users, billingSvc, sender, cfg.AppBaseURL, inviteEmailLimiter)
 	adminHandler := handlers.NewAdminHandler(repos.Users, repos.Coupons, repos.SignupInvites)
+	// Descadastro: links assinados com JWT_SECRET (rotacionar o segredo invalida links antigos).
+	emailPrefsHandler := handlers.NewEmailPrefsHandler(repos.Users, []byte(cfg.JWTSecret))
+	unsubLimiter := middleware.NewInMemoryRateLimiter(20, time.Minute)
 
 	// Moderador e admin podem ver estatísticas, listar admins/moderadores e gerenciar convites.
 	adminOrModMid := middleware.RequireRole(repos.Users, "admin", "moderator")
@@ -71,6 +86,14 @@ func registerRoutes(
 	mux.Handle("POST /auth/register", http.HandlerFunc(authHandler.Register))
 	mux.Handle("POST /auth/refresh",
 		middleware.RateLimit(refreshLimiter)(http.HandlerFunc(authHandler.Refresh)))
+	mux.Handle("POST /auth/password/forgot",
+		middleware.RateLimit(forgotLimiter)(http.HandlerFunc(passwordResetHandler.Forgot)))
+	mux.Handle("POST /auth/password/reset",
+		middleware.RateLimit(resetLimiter)(http.HandlerFunc(passwordResetHandler.Reset)))
+
+	// ── E-mail — descadastro público (POST: GET não muta estado) ──────────────
+	mux.Handle("POST /email/unsubscribe",
+		middleware.RateLimit(unsubLimiter)(http.HandlerFunc(emailPrefsHandler.Unsubscribe)))
 
 	// ── Auth — autenticadas ───────────────────────────────────────────────────
 	mux.Handle("POST /auth/logout", authMid(http.HandlerFunc(authHandler.Logout)))

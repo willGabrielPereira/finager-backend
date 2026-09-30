@@ -1,13 +1,18 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/getsentry/sentry-go"
 	"github.com/google/uuid"
 
+	"github.com/willGabrielPereira/finager-backend/internal/mailer"
 	"github.com/willGabrielPereira/finager-backend/internal/middleware"
 	"github.com/willGabrielPereira/finager-backend/internal/models"
 	"github.com/willGabrielPereira/finager-backend/internal/repository"
@@ -17,10 +22,13 @@ import (
 )
 
 type FamilyHandler struct {
-	familyRepo *repository.FamilyRepository
-	inviteRepo *repository.FamilyInviteRepository
-	userRepo   *repository.UserRepository
-	billingSvc *billing.Service
+	familyRepo         *repository.FamilyRepository
+	inviteRepo         *repository.FamilyInviteRepository
+	userRepo           *repository.UserRepository
+	billingSvc         *billing.Service
+	sender             mailer.Sender // nil = e-mail desligado
+	appBaseURL         string
+	inviteEmailLimiter middleware.RateLimiter // e-mails de convite por usuário (anti-relay)
 }
 
 func NewFamilyHandler(
@@ -28,12 +36,18 @@ func NewFamilyHandler(
 	inviteRepo *repository.FamilyInviteRepository,
 	userRepo *repository.UserRepository,
 	billingSvc *billing.Service,
+	sender mailer.Sender,
+	appBaseURL string,
+	inviteEmailLimiter middleware.RateLimiter,
 ) *FamilyHandler {
 	return &FamilyHandler{
-		familyRepo: familyRepo,
-		inviteRepo: inviteRepo,
-		userRepo:   userRepo,
-		billingSvc: billingSvc,
+		familyRepo:         familyRepo,
+		inviteRepo:         inviteRepo,
+		userRepo:           userRepo,
+		billingSvc:         billingSvc,
+		sender:             sender,
+		appBaseURL:         strings.TrimRight(appBaseURL, "/"),
+		inviteEmailLimiter: inviteEmailLimiter,
 	}
 }
 
@@ -129,12 +143,58 @@ func (h *FamilyHandler) CreateInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// E-mail é melhor esforço: o 201 com o token nunca depende dele.
+	// sender checado primeiro para não gastar cota do limiter com e-mail desligado.
+	if h.sender != nil && targetEmail != nil {
+		if h.inviteEmailLimiter.Allow(userID.String()) {
+			h.sendInviteEmail(familyID, userID, *targetEmail, invite.Token)
+		} else {
+			slog.Warn("invite_email.rate_limited", "user_id", userID, "to", mailer.Mask(*targetEmail))
+		}
+	}
+
 	response.JSON(w, http.StatusCreated, inviteResponse{
 		ID:          invite.ID,
 		Token:       invite.Token,
 		TargetEmail: invite.TargetEmail,
 		ExpiresAt:   invite.ExpiresAt,
 		CreatedAt:   invite.CreatedAt,
+	})
+}
+
+// sendInviteEmail dispara o e-mail de convite em segundo plano. Os lookups de nome
+// da família e login do criador só servem ao e-mail, por isso rodam na goroutine.
+func (h *FamilyHandler) sendInviteEmail(familyID, userID uuid.UUID, to, token string) {
+	mailer.Go("family_invite", 10*time.Second, func(ctx context.Context) {
+		fail := func(err error) {
+			slog.Error("email.failed", "event", "family_invite", "to", mailer.Mask(to), "err", err)
+			sentry.CaptureException(fmt.Errorf("email failed (family_invite): %w", err))
+		}
+		family, err := h.familyRepo.FindByID(ctx, familyID)
+		if err != nil {
+			fail(err)
+			return
+		}
+		inviter, err := h.userRepo.FindByID(ctx, userID)
+		if err != nil {
+			fail(err)
+			return
+		}
+		// Fragmento (#), não query: o token não vaza via Referer nem logs de servidor.
+		subject, body, err := mailer.Render("family_invite", map[string]string{
+			"FamilyName":   family.Name,
+			"InviterLogin": inviter.Login,
+			"Link":         h.appBaseURL + "/convite#token=" + token,
+		})
+		if err != nil {
+			fail(err)
+			return
+		}
+		if err := h.sender.Send(ctx, mailer.Message{To: []string{to}, Subject: subject, HTML: body}); err != nil {
+			fail(err)
+			return
+		}
+		slog.Info("email.sent", "event", "family_invite", "to", mailer.Mask(to))
 	})
 }
 
