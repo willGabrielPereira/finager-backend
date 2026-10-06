@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/willGabrielPereira/finager-backend/internal/classifier"
+	"github.com/willGabrielPereira/finager-backend/internal/csvparser"
 	"github.com/willGabrielPereira/finager-backend/internal/middleware"
 	"github.com/willGabrielPereira/finager-backend/internal/models"
 	"github.com/willGabrielPereira/finager-backend/internal/ofxparser"
@@ -60,8 +63,8 @@ type importResponse struct {
 
 // Import processa o upload de um arquivo OFX (banco ou cartão) e persiste as transações no banco.
 // Suporta conciliação automática com pagamentos manuais ou planejados prévios e classificação híbrida.
-// @Summary      Importar OFX
-// @Description  Recebe um arquivo OFX via multipart/form-data e salva as transações com conciliação automática.
+// @Summary      Importar extrato (OFX ou CSV)
+// @Description  Recebe um arquivo OFX ou CSV (Inter, Nubank, Flash, Bradesco) via multipart/form-data e salva as transações com conciliação automática.
 // @Router       /transactions/import [post]
 func (h *TransactionHandler) Import(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -137,10 +140,24 @@ func (h *TransactionHandler) Import(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	transactions, err := ofxparser.Parse(file, accountID, familyID, userID)
+	raw, err := io.ReadAll(file)
 	if err != nil {
 		response.Validations(w, response.ValidationError{
-			Field: "file", Rule: "invalid_format", Message: "O arquivo OFX está corrompido ou fora do formato estrito: " + err.Error(),
+			Field: "file", Rule: "required", Message: "Arquivo inalcançável ou descartado pela requisição",
+		})
+		return
+	}
+
+	// Detecta o formato pelo conteúdo: OFX tem cabeçalho/tag <OFX>, o resto é tratado como CSV
+	var transactions []models.Transaction
+	if upper := bytes.ToUpper(raw); bytes.Contains(upper, []byte("<OFX")) || bytes.Contains(upper, []byte("OFXHEADER")) {
+		transactions, err = ofxparser.Parse(bytes.NewReader(raw), accountID, familyID, userID)
+	} else {
+		transactions, err = csvparser.Parse(raw, accountID, familyID, userID)
+	}
+	if err != nil {
+		response.Validations(w, response.ValidationError{
+			Field: "file", Rule: "invalid_format", Message: "O arquivo OFX/CSV está corrompido ou fora do formato suportado: " + err.Error(),
 		})
 		return
 	}
