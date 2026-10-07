@@ -1,0 +1,8 @@
+{{define "subject"}}A equipe de suporte do Finager baixou os dados da sua família{{end}}
+{{define "content"}}
+  <p style="margin:0 0 16px;">Olá, {{.Login}}!</p>
+  <p style="margin:0 0 16px;">Em <strong>{{.When}}</strong> (horário de Brasília), um membro da equipe de suporte do Finager baixou uma cópia dos dados da sua família (contas, transações, tags e membros). Isso só é possível porque a sua família liberou o acesso do suporte, que vale até <strong>{{.Until}}</strong>.</p>
+  <p style="margin:0 0 16px;"><strong>Motivo informado:</strong> {{.Reason}}</p>
+  <p style="margin:0 0 16px;">Senhas e tokens de acesso nunca fazem parte dessa cópia.</p>
+  <p style="margin:0;">Se você não reconhece essa liberação, desative o acesso do suporte nas configurações da família e troque a sua senha.</p>
+{{end}}

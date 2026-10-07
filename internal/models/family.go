@@ -18,6 +18,7 @@ type Family struct {
 	SubscriptionStatus    string      `json:"subscription_status"`
 	SubscriptionExpiresAt *time.Time  `json:"subscription_expires_at,omitempty"`
 	SubscriptionProvider  *string     `json:"subscription_provider,omitempty"`
+	SupportAccessUntil    *time.Time  `json:"support_access_until,omitempty"`
 	CreatedAt             time.Time   `json:"created_at"`
 	UpdatedAt             time.Time   `json:"updated_at"`
 }

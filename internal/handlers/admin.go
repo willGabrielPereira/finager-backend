@@ -1,13 +1,19 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/getsentry/sentry-go"
 	"github.com/google/uuid"
 
+	"github.com/willGabrielPereira/finager-backend/internal/mailer"
 	"github.com/willGabrielPereira/finager-backend/internal/middleware"
 	"github.com/willGabrielPereira/finager-backend/internal/models"
 	"github.com/willGabrielPereira/finager-backend/internal/repository"
@@ -20,11 +26,23 @@ type AdminHandler struct {
 	userRepo   *repository.UserRepository
 	couponRepo *repository.CouponRepository
 	inviteRepo *repository.SignupInviteRepository
+	familyRepo *repository.FamilyRepository
+	auditRepo  *repository.AuditRepository
+	dumpRepo   *repository.DumpRepository
+	sender     mailer.Sender // nil = e-mail desligado
 }
 
 // NewAdminHandler cria um AdminHandler com os repositórios injetados.
-func NewAdminHandler(users *repository.UserRepository, coupons *repository.CouponRepository, invites *repository.SignupInviteRepository) *AdminHandler {
-	return &AdminHandler{userRepo: users, couponRepo: coupons, inviteRepo: invites}
+func NewAdminHandler(
+	users *repository.UserRepository,
+	coupons *repository.CouponRepository,
+	invites *repository.SignupInviteRepository,
+	families *repository.FamilyRepository,
+	audit *repository.AuditRepository,
+	dumps *repository.DumpRepository,
+	sender mailer.Sender,
+) *AdminHandler {
+	return &AdminHandler{userRepo: users, couponRepo: coupons, inviteRepo: invites, familyRepo: families, auditRepo: audit, dumpRepo: dumps, sender: sender}
 }
 
 // allowedRoles é o allow-list de roles válidos. Nenhum valor de role vindo do
@@ -427,4 +445,96 @@ func (h *AdminHandler) UpdateCoupon(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.JSON(w, http.StatusOK, map[string]string{"message": "Cupom atualizado com sucesso"})
+}
+
+// FamilyDump devolve um script psql (DDL + COPY) com os dados de uma família.
+// Só funciona enquanto a própria família mantiver a concessão de acesso do suporte.
+// @Summary      Dump SQL dos dados de uma família (suporte)
+// @Description  Exige concessão ativa da família (PUT /family/support-access) e o parâmetro reason. Registra auditoria e avisa os membros por e-mail.
+// @Tags         Admin
+// @Produce      plain
+// @Param        id      path   string  true  "ID da família"
+// @Param        reason  query  string  true  "Motivo/ticket (máx. 200 caracteres)"
+// @Success      200  {string}  string
+// @Failure      400  {object}  map[string]interface{}
+// @Failure      403  {object}  map[string]interface{}
+// @Security     BearerAuth
+// @Router       /admin/families/{id}/dump [get]
+func (h *AdminHandler) FamilyDump(w http.ResponseWriter, r *http.Request) {
+	familyID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "E_INVALID_ID", "ID de família inválido")
+		return
+	}
+	reason := strings.TrimSpace(r.URL.Query().Get("reason"))
+	if reason == "" || len([]rune(reason)) > 200 {
+		response.Error(w, http.StatusBadRequest, "E_VALIDATION", "reason é obrigatório (máx. 200 caracteres)")
+		return
+	}
+	adminID, err := uuid.Parse(middleware.GetUserID(r))
+	if err != nil {
+		response.Error(w, http.StatusUnauthorized, "E_INVALID_SESSION", "Sessão inválida")
+		return
+	}
+
+	family, err := h.familyRepo.FindByID(r.Context(), familyID)
+	if err != nil {
+		// Inexistente e sem concessão respondem igual: não revela quais famílias existem.
+		response.Error(w, http.StatusForbidden, "E_SUPPORT_ACCESS_DENIED", "A família não concedeu acesso ao suporte")
+		return
+	}
+	if family.SupportAccessUntil == nil || !family.SupportAccessUntil.After(time.Now()) {
+		response.Error(w, http.StatusForbidden, "E_SUPPORT_ACCESS_DENIED", "A família não concedeu acesso ao suporte")
+		return
+	}
+
+	// Auditoria antes de qualquer byte de dado: sem registro, sem dump.
+	if err := h.auditRepo.Insert(r.Context(), adminID, familyID, "family_dump", reason); err != nil {
+		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha ao registrar auditoria")
+		return
+	}
+	slog.Info("support.dump", "admin_id", adminID, "family_id", familyID, "reason", reason)
+	h.notifySupportDump(familyID, reason, *family.SupportAccessUntil)
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="finager-family-%s.sql"`, familyID))
+	w.Header().Set("Cache-Control", "no-store")
+	if err := h.dumpRepo.WriteFamilyDump(r.Context(), w, familyID); err != nil {
+		// Status 200 já foi enviado: o arquivo fica sem o marcador final e a CLI detecta.
+		slog.Error("support.dump_failed", "family_id", familyID, "err", err)
+		sentry.CaptureException(fmt.Errorf("support dump failed: %w", err))
+	}
+}
+
+// notifySupportDump avisa cada membro da família que o suporte baixou os dados (melhor esforço).
+func (h *AdminHandler) notifySupportDump(familyID uuid.UUID, reason string, until time.Time) {
+	if h.sender == nil {
+		return
+	}
+	brt := time.FixedZone("BRT", -3*3600)
+	const layout = "02/01/2006 15:04"
+	when, untilStr := time.Now().In(brt).Format(layout), until.In(brt).Format(layout)
+
+	mailer.Go("support_export", 15*time.Second, func(ctx context.Context) {
+		members, err := h.userRepo.ListFamilyEmails(ctx, familyID)
+		if err != nil {
+			slog.Error("email.failed", "event", "support_export", "err", err)
+			sentry.CaptureException(fmt.Errorf("email failed (support_export): %w", err))
+			return
+		}
+		for _, m := range members {
+			subject, body, err := mailer.Render("support_export", map[string]string{
+				"Login": m.Login, "When": when, "Until": untilStr, "Reason": reason,
+			})
+			if err == nil {
+				err = h.sender.Send(ctx, mailer.Message{To: []string{m.Email}, Subject: subject, HTML: body})
+			}
+			if err != nil {
+				slog.Error("email.failed", "event", "support_export", "to", mailer.Mask(m.Email), "err", err)
+				sentry.CaptureException(fmt.Errorf("email failed (support_export): %w", err))
+				continue
+			}
+			slog.Info("email.sent", "event", "support_export", "to", mailer.Mask(m.Email))
+		}
+	})
 }

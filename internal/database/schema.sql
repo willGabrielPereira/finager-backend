@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS families (
     subscription_provider    TEXT,
     external_subscription_id TEXT,
     ofx_reminder_sent_at     TIMESTAMPTZ,
+    support_access_until     TIMESTAMPTZ, -- NULL/passado = suporte sem acesso aos dados
     created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -152,6 +153,16 @@ CREATE TABLE IF NOT EXISTS classifier_states (
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Log de auditoria de ações administrativas sobre dados de uma família
+CREATE TABLE IF NOT EXISTS admin_audit_log (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    admin_id   UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    family_id  UUID        NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+    action     TEXT        NOT NULL,
+    reason     TEXT        NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Índices de performance
 CREATE INDEX IF NOT EXISTS idx_transactions_family_date ON transactions(family_id, date_posted DESC);
 CREATE INDEX IF NOT EXISTS idx_transactions_account ON transactions(account_id);
@@ -193,3 +204,4 @@ CREATE TABLE IF NOT EXISTS signup_invites (
 );
 
 CREATE INDEX IF NOT EXISTS idx_signup_invites_token ON signup_invites(token);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_log_family ON admin_audit_log(family_id, created_at DESC);

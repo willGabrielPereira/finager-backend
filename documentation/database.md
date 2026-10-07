@@ -86,3 +86,11 @@ func TestMinhaFuncionalidade(t *testing.T) {
 ```
 
 - **Isolamento de Tenancy:** Todo novo teste de handler deve criar pelo menos duas famílias distintas e testar que a Família B recebe `404` ou `403` ao tentar acessar/modificar recursos criados pela Família A.
+
+## Acesso do suporte aos dados de uma família (dump)
+
+- A família concede o acesso com prazo: `PUT /family/support-access` `{enabled, days}` (1–30, padrão 7) → `families.support_access_until`. Expirado/NULL = sem acesso.
+- `GET /admin/families/{id}/dump?reason=...` (admin/moderator + elevação por senha) devolve um script psql: `schema.sql` embutido (DDL) + `COPY ... FROM stdin` por tabela, num snapshot REPEATABLE READ. `password_hash` sai como `REDACTED`; tokens, blocklist e convites não são exportados. Termina com `DumpEndMarker` (a CLI detecta truncamento).
+- Cada dump grava `admin_audit_log` e avisa os membros por e-mail (`support_export.html`, ignora opt-out).
+- CLI: `make support-dump FAMILY=<uuid> REASON="ticket 123" [OUT=dump.sql]` (env `FINAGER_API_URL`, `FINAGER_ADMIN_LOGIN`, opcional `FINAGER_ADMIN_PASSWORD`). Restaurar: `psql -d <banco_vazio> -f dump.sql`.
+- Ao adicionar tabela com dados de família, inclua-a em `dumpTables` (`internal/repository/dump.go`).

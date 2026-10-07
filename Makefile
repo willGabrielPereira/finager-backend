@@ -1,4 +1,4 @@
-.PHONY: docs build run seed seed-tags migrate migrate-status up down clean fresh reset-transactions reset-password test
+.PHONY: docs build run seed seed-tags migrate migrate-status up down clean fresh reset-transactions reset-password support-dump test
 
 ## docs: Regenera a documentação Swagger a partir das anotações nos handlers
 docs:
@@ -50,6 +50,10 @@ reset-transactions:
 ## reset-password: Reseta manualmente a senha de um usuário (login ou email) — uso: make reset-password ID=<login_ou_email> PASSWORD=<nova_senha_opcional>
 reset-password:
 	go run ./cmd/resetpassword $(ID) $(PASSWORD)
+
+## support-dump: Baixa o dump de uma família via API, sobe o Postgres local, restaura em finager_support e aplica a senha mestre — uso: make support-dump FAMILY=<uuid> REASON="ticket 123" [OUT=dump.sql]
+support-dump:
+	go run ./cmd/supportdump "$(FAMILY)" "$(REASON)" $(OUT)
 
 ## test: Executa toda a suíte de testes (requer Docker para os testes de integração)
 test:

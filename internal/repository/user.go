@@ -489,3 +489,31 @@ func (r *UserRepository) CountAdmins(ctx context.Context) (int, error) {
 	err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE role = 'admin'`).Scan(&count)
 	return count, err
 }
+
+// ListFamilyEmails devolve os e-mails dos membros atuais da família (mesma interseção de
+// ListReminderRecipients), ignorando opt-out: é aviso de segurança, não lembrete.
+func (r *UserRepository) ListFamilyEmails(ctx context.Context, familyID uuid.UUID) ([]ReminderRecipient, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	rows, err := r.pool.Query(ctx, `
+		SELECT u.id, u.login, u.email
+		FROM users u
+		JOIN family_members fm ON fm.user_id = u.id AND fm.family_id = $1
+		WHERE u.family_id = $1 AND u.email IS NOT NULL AND u.email <> ''
+	`, familyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []ReminderRecipient
+	for rows.Next() {
+		var rr ReminderRecipient
+		if err := rows.Scan(&rr.ID, &rr.Login, &rr.Email); err != nil {
+			return nil, err
+		}
+		out = append(out, rr)
+	}
+	return out, rows.Err()
+}

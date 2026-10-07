@@ -64,7 +64,7 @@ func registerRoutes(
 	// Anti-relay: no máximo 10 e-mails de convite de família por usuário por dia.
 	inviteEmailLimiter := middleware.NewInMemoryRateLimiter(10, 24*time.Hour)
 	familyHandler := handlers.NewFamilyHandler(repos.Families, repos.Invites, repos.Users, billingSvc, sender, cfg.AppBaseURL, inviteEmailLimiter)
-	adminHandler := handlers.NewAdminHandler(repos.Users, repos.Coupons, repos.SignupInvites)
+	adminHandler := handlers.NewAdminHandler(repos.Users, repos.Coupons, repos.SignupInvites, repos.Families, repos.Audit, repos.Dumps, sender)
 	// Descadastro: links assinados com JWT_SECRET (rotacionar o segredo invalida links antigos).
 	emailPrefsHandler := handlers.NewEmailPrefsHandler(repos.Users, []byte(cfg.JWTSecret))
 	unsubLimiter := middleware.NewInMemoryRateLimiter(20, time.Minute)
@@ -118,6 +118,8 @@ func registerRoutes(
 	mux.Handle("POST /family/invites", authMid(http.HandlerFunc(familyHandler.CreateInvite)))
 	mux.Handle("POST /family/join", authMid(http.HandlerFunc(familyHandler.Join)))
 	mux.Handle("DELETE /family/members/{id}", authMid(http.HandlerFunc(familyHandler.RemoveMember)))
+	mux.Handle("GET /family/support-access", authMid(http.HandlerFunc(familyHandler.GetSupportAccess)))
+	mux.Handle("PUT /family/support-access", authMid(http.HandlerFunc(familyHandler.SetSupportAccess)))
 
 	// ── Transações ────────────────────────────────────────────────────────────
 	mux.Handle("POST /transactions", authMid(http.HandlerFunc(txHandler.Create)))
@@ -156,5 +158,6 @@ func registerRoutes(
 	mux.Handle("DELETE /admin/invites/{id}", authMid(adminOrModMid(elevatedMid(http.HandlerFunc(adminHandler.RevokeInvite)))))
 	mux.Handle("GET /admin/coupons", authMid(adminOnlyMid(elevatedMid(http.HandlerFunc(adminHandler.ListCoupons)))))
 	mux.Handle("POST /admin/coupons", authMid(adminOnlyMid(elevatedMid(http.HandlerFunc(adminHandler.CreateCoupon)))))
+	mux.Handle("GET /admin/families/{id}/dump", authMid(adminOrModMid(elevatedMid(http.HandlerFunc(adminHandler.FamilyDump)))))
 	mux.Handle("PATCH /admin/coupons/{id}", authMid(adminOnlyMid(elevatedMid(http.HandlerFunc(adminHandler.UpdateCoupon)))))
 }

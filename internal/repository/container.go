@@ -21,6 +21,8 @@ type Container struct {
 	SignupInvites    *SignupInviteRepository
 	Coupons          *CouponRepository
 	PasswordResets   *PasswordResetRepository
+	Audit            *AuditRepository
+	Dumps            *DumpRepository
 }
 
 // New cria um container já com todos os repositórios injetados com o banco de dados.
@@ -39,6 +41,8 @@ func New(pool *pgxpool.Pool) *Container {
 		SignupInvites:    NewSignupInviteRepository(pool),
 		Coupons:          NewCouponRepository(pool),
 		PasswordResets:   NewPasswordResetRepository(pool),
+		Audit:            NewAuditRepository(pool),
+		Dumps:            NewDumpRepository(pool),
 	}
 }
 

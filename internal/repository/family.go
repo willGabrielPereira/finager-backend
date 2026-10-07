@@ -47,9 +47,9 @@ func (r *FamilyRepository) FindByID(ctx context.Context, id uuid.UUID) (*models.
 	defer cancel()
 
 	var family models.Family
-	query := `SELECT id, name, plan, subscription_status, subscription_expires_at, subscription_provider, created_at, updated_at FROM families WHERE id = $1`
+	query := `SELECT id, name, plan, subscription_status, subscription_expires_at, subscription_provider, support_access_until, created_at, updated_at FROM families WHERE id = $1`
 	err := r.pool.QueryRow(ctx, query, id).Scan(
-		&family.ID, &family.Name, &family.Plan, &family.SubscriptionStatus, &family.SubscriptionExpiresAt, &family.SubscriptionProvider, &family.CreatedAt, &family.UpdatedAt,
+		&family.ID, &family.Name, &family.Plan, &family.SubscriptionStatus, &family.SubscriptionExpiresAt, &family.SubscriptionProvider, &family.SupportAccessUntil, &family.CreatedAt, &family.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -255,3 +255,13 @@ func (r *FamilyRepository) CountMembers(ctx context.Context, familyID uuid.UUID)
 	return count, err
 }
 
+
+// SetSupportAccess define até quando o suporte pode baixar os dados da família.
+// until == nil revoga o acesso.
+func (r *FamilyRepository) SetSupportAccess(ctx context.Context, familyID uuid.UUID, until *time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	_, err := r.pool.Exec(ctx, `UPDATE families SET support_access_until = $2, updated_at = now() WHERE id = $1`, familyID, until)
+	return err
+}

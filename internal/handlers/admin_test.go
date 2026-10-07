@@ -35,7 +35,7 @@ func newAdminMux(repos *repository.Container, authSvc *auth.Service) http.Handle
 	// Exige reautenticação recente (step-up), igual à cadeia real em cmd/api/routes.go.
 	elevatedMid := middleware.RequireElevated(authSvc, repos.Blocklist)
 
-	adminHandler := handlers.NewAdminHandler(repos.Users, repos.Coupons, repos.SignupInvites)
+	adminHandler := handlers.NewAdminHandler(repos.Users, repos.Coupons, repos.SignupInvites, repos.Families, repos.Audit, repos.Dumps, nil)
 	authHandler := auth.NewHandler(authSvc, repos.Users, repos.Families, repos.RefreshTokens, repos.Blocklist, repos.Invites, repos.SignupInvites, 1, middleware.NewInMemoryRateLimiter(10, time.Minute))
 	profileHandler := handlers.NewProfileHandler(repos.Users, repos.Families, nil)
 

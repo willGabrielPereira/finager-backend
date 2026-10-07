@@ -360,3 +360,80 @@ func (h *FamilyHandler) RemoveMember(w http.ResponseWriter, r *http.Request) {
 
 	response.JSON(w, http.StatusOK, map[string]string{"message": "Membro removido da família com sucesso"})
 }
+
+type supportAccessRequest struct {
+	Enabled bool `json:"enabled"`
+	Days    int  `json:"days"` // 1–30; 0 = padrão (7)
+}
+
+type supportAccessResponse struct {
+	Enabled bool       `json:"enabled"`
+	Until   *time.Time `json:"until,omitempty"`
+}
+
+func supportAccessState(until *time.Time) supportAccessResponse {
+	if until == nil || !until.After(time.Now()) {
+		return supportAccessResponse{}
+	}
+	return supportAccessResponse{Enabled: true, Until: until}
+}
+
+// GetSupportAccess informa se a família concedeu acesso do suporte aos seus dados.
+// @Summary      Estado do acesso do suporte
+// @Tags         Família
+// @Success      200  {object}  supportAccessResponse
+// @Security     BearerAuth
+// @Router       /family/support-access [get]
+func (h *FamilyHandler) GetSupportAccess(w http.ResponseWriter, r *http.Request) {
+	familyID, err := uuid.Parse(middleware.GetFamilyID(r))
+	if err != nil {
+		response.Error(w, http.StatusUnauthorized, "E_INVALID_SESSION", "Família inválida no token")
+		return
+	}
+	family, err := h.familyRepo.FindByID(r.Context(), familyID)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha ao buscar família")
+		return
+	}
+	response.JSON(w, http.StatusOK, supportAccessState(family.SupportAccessUntil))
+}
+
+// SetSupportAccess concede (com prazo em dias) ou revoga o acesso do suporte aos dados da família.
+// @Summary      Conceder/revogar acesso do suporte
+// @Tags         Família
+// @Param        body  body  supportAccessRequest  true  "enabled e days (1–30, padrão 7)"
+// @Success      200  {object}  supportAccessResponse
+// @Failure      400  {object}  map[string]interface{}
+// @Security     BearerAuth
+// @Router       /family/support-access [put]
+func (h *FamilyHandler) SetSupportAccess(w http.ResponseWriter, r *http.Request) {
+	familyID, err := uuid.Parse(middleware.GetFamilyID(r))
+	if err != nil {
+		response.Error(w, http.StatusUnauthorized, "E_INVALID_SESSION", "Família inválida no token")
+		return
+	}
+	var req supportAccessRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Error(w, http.StatusBadRequest, "E_INVALID_BODY", "Corpo da requisição inválido")
+		return
+	}
+	if req.Days == 0 {
+		req.Days = 7
+	}
+	if req.Enabled && (req.Days < 1 || req.Days > 30) {
+		response.Error(w, http.StatusBadRequest, "E_VALIDATION", "days deve estar entre 1 e 30")
+		return
+	}
+
+	var until *time.Time
+	if req.Enabled {
+		t := time.Now().Add(time.Duration(req.Days) * 24 * time.Hour)
+		until = &t
+	}
+	if err := h.familyRepo.SetSupportAccess(r.Context(), familyID, until); err != nil {
+		response.Error(w, http.StatusInternalServerError, "E_INTERNAL", "Falha ao atualizar acesso do suporte")
+		return
+	}
+	slog.Info("support_access.set", "family_id", familyID, "user_id", middleware.GetUserID(r), "enabled", req.Enabled)
+	response.JSON(w, http.StatusOK, supportAccessState(until))
+}
