@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -32,16 +33,26 @@ func fatal(format string, a ...any) {
 
 func main() {
 	_ = godotenv.Load()
+	guardNotProd()
 
-	if len(os.Args) < 3 {
+	// make passa "" quando FAMILY/REASON não são definidos: len(os.Args) sozinho não pega.
+	if len(os.Args) < 3 || strings.TrimSpace(os.Args[1]) == "" || strings.TrimSpace(os.Args[2]) == "" {
 		fmt.Println(`Uso: make support-dump FAMILY=<uuid> REASON="ticket 123" [OUT=dump.sql]`)
 		fmt.Println("\nVariáveis: FINAGER_API_URL, FINAGER_ADMIN_LOGIN, FINAGER_ADMIN_PASSWORD (opcional), FINAGER_MASTER_PASSWORD e FINAGER_SUPPORT_DB (opcionais)")
 		os.Exit(1)
 	}
 	familyID, reason := os.Args[1], os.Args[2]
-	out := "finager-family-" + familyID + ".sql"
-	if len(os.Args) > 3 && os.Args[3] != "" {
+	// Sem OUT, o dump (dados pessoais) vai para uma pasta temporária e é apagado após a restauração.
+	out, keep := "", len(os.Args) > 3 && os.Args[3] != ""
+	if keep {
 		out = os.Args[3]
+	} else {
+		dir, err := os.MkdirTemp("", "finager-support-")
+		if err != nil {
+			fatal("%v", err)
+		}
+		out = filepath.Join(dir, "family-"+familyID+".sql")
+		defer os.RemoveAll(dir)
 	}
 
 	apiURL := strings.TrimRight(os.Getenv("FINAGER_API_URL"), "/")
@@ -82,7 +93,7 @@ func main() {
 		fatal("API respondeu %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 
-	f, err := os.OpenFile(out, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	f, err := os.OpenFile(out, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		fatal("%v", err)
 	}
@@ -102,17 +113,23 @@ func main() {
 	restoreLocal(out)
 }
 
-// restoreLocal sobe o serviço db do compose, recria o banco de suporte, restaura o dump e
+// restoreLocal sobe o serviço db do compose, RECRIA o banco local (por padrão o do dia a dia,
+// "finager": tudo o que havia nele é perdido), restaura o dump e
 // troca o password_hash de todos os usuários pela senha mestre. A senha mestre nunca vai
 // à API: o hash de produção sai como REDACTED e o bcrypt é gerado e aplicado só aqui.
 func restoreLocal(dumpFile string) {
-	dbName := envOr("FINAGER_SUPPORT_DB", "finager_support")
+	dbName := envOr("FINAGER_SUPPORT_DB", "finager")
 	master := envOr("FINAGER_MASTER_PASSWORD", "finager-master")
 
 	run(nil, "docker", "compose", "up", "-d", "--wait", "db")
 	psql := func(db string, stdin io.Reader, args ...string) {
 		run(stdin, "docker", append([]string{"compose", "exec", "-T", "db", "psql", "-U", "postgres", "-d", db, "-v", "ON_ERROR_STOP=1", "-q"}, args...)...)
 	}
+	// O dump não traz a tabela de controle de migrations; guarda a do banco atual para recolocá-la
+	// (senão o próximo start da API reaplicaria todas as migrations). Banco novo = sem linhas.
+	prevMigrations, _ := exec.Command("docker", "compose", "exec", "-T", "db", "psql", "-U", "postgres", "-d", dbName, "-At", "-c", "COPY migrations TO STDOUT").Output()
+
+	fmt.Printf("ATENÇÃO: recriando o banco local %q; os dados que havia nele serão substituídos.\n", dbName)
 	psql("postgres", nil, "-c", fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", dbName))
 	psql("postgres", nil, "-c", "CREATE DATABASE "+dbName)
 
@@ -122,6 +139,11 @@ func restoreLocal(dumpFile string) {
 	}
 	defer f.Close()
 	psql(dbName, f)
+
+	psql(dbName, nil, "-c", `CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY, description TEXT NOT NULL, applied_at TIMESTAMP NOT NULL DEFAULT NOW())`)
+	if len(prevMigrations) > 0 {
+		psql(dbName, bytes.NewReader(prevMigrations), "-c", "COPY migrations FROM STDIN")
+	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(master), bcrypt.DefaultCost)
 	if err != nil {
@@ -133,11 +155,31 @@ func restoreLocal(dumpFile string) {
 	fmt.Printf(`
 Banco local pronto: %[1]s (senha mestre aplicada a todos os usuários)
   Senha mestre: %[2]s   (troque com FINAGER_MASTER_PASSWORD)
-  Rodar a API apontando para ele:
-    DATABASE_URL=postgres://postgres:postgres@localhost:5432/%[1]s?sslmode=disable make run
+  Para usar outro banco em vez de recriar o do dia a dia: FINAGER_SUPPORT_DB=finager_support
+  (e rode a API com DATABASE_URL=postgres://postgres:postgres@localhost:5432/<banco>?sslmode=disable)
   Abrir o psql:
     docker compose exec db psql -U postgres -d %[1]s
 `, dbName, master)
+}
+
+// guardNotProd aborta antes de qualquer chamada se o ambiente parecer produção: a CLI recria
+// o banco local (DROP DATABASE), então rodá-la num host/ambiente de produção apagaria dados reais.
+func guardNotProd() {
+	if env := strings.ToLower(os.Getenv("APP_ENV")); env == "production" || env == "prod" {
+		fatal("APP_ENV=%s: esta CLI recria o banco local e só roda em desenvolvimento", env)
+	}
+	// DATABASE_URL só é lida para checar o host; o destino real é o serviço db do docker compose.
+	if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			fatal("DATABASE_URL inválida; não dá para confirmar que o banco é local")
+		}
+		switch u.Hostname() {
+		case "localhost", "127.0.0.1", "::1", "db":
+		default:
+			fatal("DATABASE_URL aponta para %q, que não é local; esta CLI recria o banco e só roda em desenvolvimento", u.Hostname())
+		}
+	}
 }
 
 func run(stdin io.Reader, name string, args ...string) {
